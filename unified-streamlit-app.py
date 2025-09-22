@@ -382,8 +382,13 @@ def main():
         if st.session_state.get('enable_recon', False):
             tab_list.append("🔄 PMS Reconciliation")
     
+    # Make sure Expiry Deliveries tab is added when enabled
     if EXPIRY_DELIVERY_AVAILABLE and st.session_state.get('enable_expiry_delivery', False):
         tab_list.append("📅 Expiry Deliveries")
+        # Debug info
+        if st.session_state.get('expiry_deliveries_complete', False):
+            files_count = len(st.session_state.get('expiry_delivery_files', {}))
+            st.sidebar.success(f"✅ {files_count} expiry reports generated")
     
     tab_list.extend(["📥 Downloads", "📘 Schema Info"])
     
@@ -688,7 +693,7 @@ def run_deliverables_calculation(usdinr_rate: float, fetch_prices: bool):
 def run_expiry_delivery_generation():
     """Generate physical delivery outputs per expiry date"""
     if not EXPIRY_DELIVERY_AVAILABLE:
-        st.error("Expiry Delivery Generator module not available")
+        st.error("Expiry Delivery Generator module not available. Please ensure expiry_delivery_generator.py is in the directory.")
         return
     
     try:
@@ -702,6 +707,14 @@ def run_expiry_delivery_generation():
             starting_positions = stage1_data.get('starting_positions', pd.DataFrame())
             final_positions = stage1_data.get('final_positions', pd.DataFrame())
             
+            # Check if we have positions
+            if starting_positions.empty and final_positions.empty:
+                st.warning("No positions found to process for expiry deliveries")
+                return
+            
+            # Show position counts
+            st.info(f"Processing {len(starting_positions)} starting positions and {len(final_positions)} final positions")
+            
             # Get prices if available
             prices = {}
             if st.session_state.get('use_yahoo_for_delivery', True):
@@ -714,9 +727,11 @@ def run_expiry_delivery_generation():
                                     prices[row['Symbol']] = float(row['Yahoo_Price'])
                                 except:
                                     pass
+                
+                st.info(f"Found {len(prices)} prices from Yahoo data")
             
             # Initialize generator
-            generator = ExpiryDeliveryGenerator(usdinr_rate=88.0)
+            generator = ExpiryDeliveryGenerator(usdinr_rate=st.session_state.get('usdinr_rate', 88.0))
             
             # Process positions by expiry
             pre_trade_results = generator.process_positions_by_expiry(
@@ -726,6 +741,13 @@ def run_expiry_delivery_generation():
             post_trade_results = generator.process_positions_by_expiry(
                 final_positions, prices, "Post-Trade"
             )
+            
+            # Check if we got any results
+            if not pre_trade_results and not post_trade_results:
+                st.warning("No expiry positions found to process")
+                return
+            
+            st.info(f"Found {len(set(list(pre_trade_results.keys()) + list(post_trade_results.keys())))} unique expiry dates")
             
             # Generate reports
             output_dir = "output/expiry_deliveries"
@@ -741,10 +763,19 @@ def run_expiry_delivery_generation():
             }
             st.session_state.expiry_deliveries_complete = True
             
-            st.success(f"✅ Generated {len(output_files)} expiry delivery reports!")
+            # Show success with details
+            if output_files:
+                st.success(f"✅ Successfully generated {len(output_files)} expiry delivery reports!")
+                
+                # Show the expiry dates processed
+                expiry_list = ", ".join([d.strftime('%Y-%m-%d') for d in sorted(output_files.keys())])
+                st.info(f"Expiry dates processed: {expiry_list}")
+            else:
+                st.warning("No expiry delivery files were generated. Check if positions have valid expiry dates.")
             
     except Exception as e:
         st.error(f"❌ Error generating expiry deliveries: {str(e)}")
+        st.code(traceback.format_exc())
         logger.error(traceback.format_exc())
 
 def run_pms_reconciliation(pms_file):
@@ -1221,7 +1252,11 @@ def display_downloads():
     """Display download section"""
     st.header("📥 Download Outputs")
     
-    cols = st.columns(3)
+    # Check if we need 4 columns instead of 3
+    if st.session_state.get('expiry_deliveries_complete', False):
+        cols = st.columns(4)
+    else:
+        cols = st.columns(3)
     
     with cols[0]:
         st.markdown("### Stage 1 Outputs")
@@ -1322,6 +1357,33 @@ def display_downloads():
         
         if not st.session_state.get('deliverables_file') and not st.session_state.get('recon_file'):
             st.info("Enable additional features in sidebar")
+    
+    # Add Expiry Deliveries column if available
+    if st.session_state.get('expiry_deliveries_complete', False):
+        with cols[3]:
+            st.markdown("### 📅 Expiry Deliveries")
+            
+            files = st.session_state.get('expiry_delivery_files', {})
+            if files:
+                # Show count of files
+                st.info(f"Generated {len(files)} expiry reports")
+                
+                # Download buttons for each expiry
+                for expiry_date, file_path in sorted(files.items()):
+                    try:
+                        with open(file_path, 'rb') as f:
+                            st.download_button(
+                                f"📅 {expiry_date.strftime('%Y-%m-%d')}",
+                                data=f.read(),
+                                file_name=f"EXPIRY_{expiry_date.strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key=f"dl_main_expiry_{expiry_date.strftime('%Y%m%d')}"
+                            )
+                    except Exception as e:
+                        st.error(f"Error loading {expiry_date}: {str(e)}")
+            else:
+                st.warning("No expiry files generated")
 
 def display_schema_info():
     """Display schema information"""
