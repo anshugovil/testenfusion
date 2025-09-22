@@ -1,7 +1,7 @@
 """
-Expiry Delivery Generator Module
+Expiry Delivery Generator Module - ENHANCED WITH ACM FORMAT OUTPUT
 Generates physical delivery trades and cash settlements per expiry date
-Integrates with existing Trade Processing Pipeline
+Now includes ACM ListedTrades format output for expiry trades with tax columns
 """
 
 import pandas as pd
@@ -13,15 +13,52 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 import logging
 from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    import pytz
+    ZoneInfo = lambda x: pytz.timezone(x)
 
 logger = logging.getLogger(__name__)
 
 
 class ExpiryDeliveryGenerator:
-    """Generate physical delivery trades for expiring positions"""
+    """Generate physical delivery trades for expiring positions with ACM format output"""
     
-    def __init__(self, usdinr_rate: float = 88.0):
+    def __init__(self, usdinr_rate: float = 88.0, acm_schema_file: str = None):
         self.usdinr_rate = usdinr_rate
+        
+        # Singapore timezone for ACM timestamps
+        try:
+            self.singapore_tz = ZoneInfo("Asia/Singapore")
+        except:
+            import pytz
+            self.singapore_tz = pytz.timezone("Asia/Singapore")
+        
+        # ACM columns - Enhanced with tax columns
+        self.acm_columns = [
+            "Trade Date",
+            "Settle Date", 
+            "Account Id",
+            "Counterparty Code",
+            "Identifier",
+            "Identifier Type",
+            "Quantity",
+            "Trade Price",
+            "Price",
+            "Instrument Type",
+            "Strike Price",
+            "Lot Size",
+            "Strategy",
+            "Executing Broker Name",
+            "Trade Venue",
+            "Notes",
+            "Transaction Type",
+            "Comms",
+            "STT",
+            "Stamp Duty",
+            "Taxes"
+        ]
         
         # Excel styles
         self.header_font = Font(bold=True, size=11)
@@ -41,14 +78,7 @@ class ExpiryDeliveryGenerator:
                                    position_type: str = "Post-Trade") -> Dict[datetime, Dict]:
         """
         Process positions grouped by expiry date
-        
-        Args:
-            positions_df: DataFrame with columns [Ticker, Symbol, Security_Type, Expiry, Strike, Lots, Lot_Size, etc.]
-            prices: Dictionary of symbol -> price from Yahoo
-            position_type: "Pre-Trade" or "Post-Trade"
-            
-        Returns:
-            Dictionary with expiry date as key and processing results as value
+        Now includes ACM format conversion
         """
         if positions_df.empty:
             return {}
@@ -76,6 +106,13 @@ class ExpiryDeliveryGenerator:
                 group_df, prices, expiry_date
             )
             
+            # Generate ACM format for derivatives and cash trades
+            derivatives_acm = self._convert_to_acm_format(derivatives, 'derivatives') if not derivatives.empty else pd.DataFrame()
+            cash_acm = self._convert_to_acm_format(cash_trades, 'cash') if not cash_trades.empty else pd.DataFrame()
+            
+            # Combine ACM formats
+            combined_acm = pd.concat([derivatives_acm, cash_acm], ignore_index=True) if not derivatives_acm.empty or not cash_acm.empty else pd.DataFrame()
+            
             results[expiry_datetime] = {
                 'position_type': position_type,
                 'expiry_date': expiry_date,
@@ -83,7 +120,10 @@ class ExpiryDeliveryGenerator:
                 'cash_trades': cash_trades,
                 'cash_summary': cash_summary,
                 'errors': errors,
-                'position_count': len(group_df)
+                'position_count': len(group_df),
+                'derivatives_acm': derivatives_acm,
+                'cash_acm': cash_acm,
+                'combined_acm': combined_acm
             }
         
         return results
@@ -148,6 +188,82 @@ class ExpiryDeliveryGenerator:
         
         return derivatives_df, cash_df, cash_summary_df, errors_df
     
+    def _convert_to_acm_format(self, trades_df: pd.DataFrame, trade_type: str) -> pd.DataFrame:
+        """
+        Convert expiry trades to ACM ListedTrades format
+        For expiry trades: Buy -> BuyToCover, Sell -> Sell
+        """
+        if trades_df.empty:
+            return pd.DataFrame(columns=self.acm_columns)
+        
+        # Get current timestamps
+        now_sg = datetime.now(self.singapore_tz)
+        trade_date_str = now_sg.strftime("%m/%d/%Y %H:%M:%S")
+        settle_date_str = now_sg.strftime("%m/%d/%Y")
+        
+        acm_records = []
+        
+        for idx, row in trades_df.iterrows():
+            # Determine Transaction Type for expiry trades
+            # Buy -> BuyToCover (closing short positions)
+            # Sell -> Sell (closing long positions)
+            buy_sell = row.get('Buy/Sell', '')
+            if buy_sell.upper().startswith('B'):
+                transaction_type = 'BuyToCover'
+            elif buy_sell.upper().startswith('S'):
+                transaction_type = 'Sell'
+            else:
+                transaction_type = ''
+            
+            # Get account ID from Symbol or use default
+            account_id = row.get('Symbol', '').split(' ')[0] if 'Symbol' in row else 'DEFAULT'
+            
+            # Get instrument type
+            instr_type = row.get('Type', '')
+            if instr_type == 'CASH':
+                instrument_type = 'EQUITY'
+            elif instr_type == 'Futures':
+                instrument_type = 'FUTIDX' if self._is_index_product(row.get('Symbol', '')) else 'FUTSTK'
+            elif instr_type in ['Call', 'Put']:
+                instrument_type = 'OPTIDX' if self._is_index_product(row.get('Symbol', '')) else 'OPTSTK'
+            else:
+                instrument_type = instr_type
+            
+            # Get tax values if available
+            stt = row.get('STT', '')
+            stamp_duty = row.get('Stamp Duty', '')
+            taxes = row.get('Taxes', '')
+            comms = row.get('Comms', '')  # Commission if available
+            
+            # Build ACM record
+            acm_record = {
+                "Trade Date": trade_date_str,
+                "Settle Date": settle_date_str,
+                "Account Id": account_id,
+                "Counterparty Code": "",
+                "Identifier": row.get('Symbol', ''),
+                "Identifier Type": "Bloomberg Yellow Key",
+                "Quantity": abs(float(row.get('Position', 0))),
+                "Trade Price": row.get('Price', ''),
+                "Price": row.get('Price', ''),
+                "Instrument Type": instrument_type,
+                "Strike Price": row.get('Strike', '') if row.get('Strike') else '',
+                "Lot Size": row.get('Lot Size', '') if row.get('Lot Size') else '',
+                "Strategy": row.get('Strategy', ''),
+                "Executing Broker Name": "",
+                "Trade Venue": "",
+                "Notes": row.get('tradenotes', ''),  # Include trade notes (A/E)
+                "Transaction Type": transaction_type,
+                "Comms": comms if comms else '',
+                "STT": stt if stt else '',
+                "Stamp Duty": stamp_duty if stamp_duty else '',
+                "Taxes": taxes if taxes else ''
+            }
+            
+            acm_records.append(acm_record)
+        
+        return pd.DataFrame(acm_records, columns=self.acm_columns)
+    
     def _get_price_for_position(self, row: pd.Series, prices: Dict[str, float]) -> Optional[float]:
         """Get price for a position from Yahoo prices or stored prices"""
         # First try Yahoo_Price column if it exists
@@ -211,7 +327,11 @@ class ExpiryDeliveryGenerator:
             'Type': 'Futures',
             'Strike': '',
             'Lot Size': lot_size,
-            'tradenotes': ''
+            'tradenotes': '',
+            'STT': 0,
+            'Stamp Duty': 0,
+            'Taxes': 0,
+            'Comms': 0
         }
         
         # Cash entry - only for stock futures, not index futures
@@ -235,10 +355,11 @@ class ExpiryDeliveryGenerator:
                 'Type': 'CASH',
                 'Strike': '',
                 'Lot Size': '',
-                'tradenotes': '',  # Blank for futures
+                'tradenotes': '',  
                 'STT': round(stt, 2),
                 'Stamp Duty': round(stamp_duty, 2),
-                'Taxes': round(taxes, 2)
+                'Taxes': round(taxes, 2),
+                'Comms': 0
             }
         
         return derivative, cash
@@ -296,6 +417,14 @@ class ExpiryDeliveryGenerator:
             else:
                 tradenotes = 'E'  # Exercise (we were long, now selling)
         
+        # Calculate taxes for derivatives (index options)
+        deriv_stt = 0
+        deriv_stamp = 0
+        if is_index and is_itm:
+            settlement_value = abs(position) * lot_size * deriv_price
+            deriv_stt = settlement_value * 0.00125  # 0.125% on settlement value
+            deriv_stamp = settlement_value * 0.00003  # 0.003% stamp duty
+        
         derivative = {
             'Underlying': underlying,
             'Symbol': ticker,
@@ -307,7 +436,11 @@ class ExpiryDeliveryGenerator:
             'Type': option_type,
             'Strike': strike,
             'Lot Size': lot_size,
-            'tradenotes': tradenotes
+            'tradenotes': tradenotes,
+            'STT': round(deriv_stt, 2),
+            'Stamp Duty': round(deriv_stamp, 2),
+            'Taxes': round(deriv_stt + deriv_stamp, 2),
+            'Comms': 0
         }
         
         # Cash entry - only for ITM single stock options
@@ -353,7 +486,8 @@ class ExpiryDeliveryGenerator:
                 'tradenotes': cash_tradenotes,
                 'STT': round(stt, 2),
                 'Stamp Duty': round(stamp_duty, 2),
-                'Taxes': round(taxes, 2)
+                'Taxes': round(taxes, 2),
+                'Comms': 0
             }
         
         return derivative, cash
@@ -378,6 +512,7 @@ class ExpiryDeliveryGenerator:
         grand_total_stt = 0
         grand_total_stamp = 0
         grand_total_taxes = 0
+        grand_total_comms = 0
         
         # Group by underlying
         for underlying in cash_df['Underlying'].unique():
@@ -396,6 +531,7 @@ class ExpiryDeliveryGenerator:
                     'Quantity': quantity,
                     'Price': price,
                     'Consideration': round(consideration, 2),
+                    'Comms': trade.get('Comms', 0),
                     'STT': trade.get('STT', 0),
                     'Stamp Duty': trade.get('Stamp Duty', 0),
                     'Taxes': trade.get('Taxes', 0),
@@ -414,12 +550,14 @@ class ExpiryDeliveryGenerator:
             sell_consideration = sum(row['Position'] * row['Price'] for _, row in sell_trades.iterrows()) if not sell_trades.empty else 0
             net_consideration = buy_consideration - sell_consideration
             
-            total_stt = underlying_trades['STT'].sum()
-            total_stamp = underlying_trades['Stamp Duty'].sum()
-            total_taxes = underlying_trades['Taxes'].sum()
+            total_comms = underlying_trades['Comms'].sum() if 'Comms' in underlying_trades else 0
+            total_stt = underlying_trades['STT'].sum() if 'STT' in underlying_trades else 0
+            total_stamp = underlying_trades['Stamp Duty'].sum() if 'Stamp Duty' in underlying_trades else 0
+            total_taxes = underlying_trades['Taxes'].sum() if 'Taxes' in underlying_trades else 0
             
             # Add to grand totals
             grand_total_consideration += net_consideration
+            grand_total_comms += total_comms
             grand_total_stt += total_stt
             grand_total_stamp += total_stamp
             grand_total_taxes += total_taxes
@@ -432,6 +570,7 @@ class ExpiryDeliveryGenerator:
                 'Quantity': net_qty,
                 'Price': '',
                 'Consideration': round(net_consideration, 2),
+                'Comms': round(total_comms, 2),
                 'STT': round(total_stt, 2),
                 'Stamp Duty': round(total_stamp, 2),
                 'Taxes': round(total_taxes, 2),
@@ -442,12 +581,12 @@ class ExpiryDeliveryGenerator:
             if underlying != cash_df['Underlying'].unique()[-1]:
                 summary_rows.append({col: '' for col in 
                     ['Underlying', 'Type', 'Buy/Sell', 'Quantity', 'Price', 
-                     'Consideration', 'STT', 'Stamp Duty', 'Taxes', 'TradeNotes']})
+                     'Consideration', 'Comms', 'STT', 'Stamp Duty', 'Taxes', 'TradeNotes']})
         
         # Add separator before grand total
         summary_rows.append({col: '---' for col in 
             ['Underlying', 'Type', 'Buy/Sell', 'Quantity', 'Price', 
-             'Consideration', 'STT', 'Stamp Duty', 'Taxes', 'TradeNotes']})
+             'Consideration', 'Comms', 'STT', 'Stamp Duty', 'Taxes', 'TradeNotes']})
         
         # Add GRAND TOTAL row
         summary_rows.append({
@@ -457,6 +596,7 @@ class ExpiryDeliveryGenerator:
             'Quantity': '',
             'Price': '',
             'Consideration': round(grand_total_consideration, 2),
+            'Comms': round(grand_total_comms, 2),
             'STT': round(grand_total_stt, 2),
             'Stamp Duty': round(grand_total_stamp, 2),
             'Taxes': round(grand_total_taxes, 2),
@@ -470,7 +610,7 @@ class ExpiryDeliveryGenerator:
                               post_trade_results: Dict,
                               output_dir: str) -> Dict[datetime, str]:
         """
-        Generate comprehensive Excel reports for each expiry
+        Generate comprehensive Excel reports for each expiry with ACM format sheets
         
         Returns:
             Dictionary of expiry_date -> file_path
@@ -496,6 +636,8 @@ class ExpiryDeliveryGenerator:
             
             # Add sheets based on available data
             sheet_added = False
+            
+            # === ORIGINAL SHEETS ===
             
             # Pre-Trade Derivatives
             if pre_data and not pre_data.get('derivatives', pd.DataFrame()).empty:
@@ -531,6 +673,20 @@ class ExpiryDeliveryGenerator:
             if post_data and not post_data.get('cash_summary', pd.DataFrame()).empty:
                 ws = wb.create_sheet("PostTrade_Summary")
                 self._write_cash_summary_sheet(ws, post_data['cash_summary'], "Post-Trade Cash Summary")
+                sheet_added = True
+            
+            # === NEW ACM FORMAT SHEETS ===
+            
+            # Pre-Trade ACM Combined
+            if pre_data and not pre_data.get('combined_acm', pd.DataFrame()).empty:
+                ws = wb.create_sheet("PreTrade_ACM")
+                self._write_acm_sheet(ws, pre_data['combined_acm'], "Pre-Trade ACM ListedTrades Format")
+                sheet_added = True
+            
+            # Post-Trade ACM Combined
+            if post_data and not post_data.get('combined_acm', pd.DataFrame()).empty:
+                ws = wb.create_sheet("PostTrade_ACM")
+                self._write_acm_sheet(ws, post_data['combined_acm'], "Post-Trade ACM ListedTrades Format")
                 sheet_added = True
             
             # Comparison sheet
@@ -569,10 +725,70 @@ class ExpiryDeliveryGenerator:
                 wb.save(file_path)
                 output_files[expiry_date] = str(file_path)
                 logger.info(f"Generated expiry report: {file_path}")
+                
+                # Also save ACM CSV files for direct import
+                if post_data and not post_data.get('combined_acm', pd.DataFrame()).empty:
+                    acm_csv_file = output_path / f"EXPIRY_ACM_{date_str}_PostTrade.csv"
+                    post_data['combined_acm'].to_csv(acm_csv_file, index=False, date_format='%m/%d/%Y')
+                    logger.info(f"Generated ACM CSV: {acm_csv_file}")
+                
+                if pre_data and not pre_data.get('combined_acm', pd.DataFrame()).empty:
+                    acm_csv_file = output_path / f"EXPIRY_ACM_{date_str}_PreTrade.csv"
+                    pre_data['combined_acm'].to_csv(acm_csv_file, index=False, date_format='%m/%d/%Y')
+                    logger.info(f"Generated ACM CSV: {acm_csv_file}")
+                    
             else:
                 logger.warning(f"No data for expiry {expiry_date}, skipping file generation")
         
         return output_files
+    
+    def _write_acm_sheet(self, ws, df: pd.DataFrame, title: str):
+        """Write ACM format sheet with special formatting for tax columns"""
+        # Add title
+        ws.cell(row=1, column=1, value=title).font = Font(bold=True, size=14)
+        ws.cell(row=2, column=1, value="Format: ACM ListedTrades (Buy->BuyToCover for expiry)").font = Font(italic=True)
+        
+        # Add headers with special coloring for tax columns
+        tax_columns = ['Comms', 'STT', 'Stamp Duty', 'Taxes']
+        tax_fill = PatternFill(start_color="FFFFE0", end_color="FFFFE0", fill_type="solid")  # Light yellow
+        
+        for col_idx, col_name in enumerate(df.columns, 1):
+            cell = ws.cell(row=4, column=col_idx, value=col_name)
+            cell.font = self.header_font
+            
+            if col_name in tax_columns:
+                cell.fill = tax_fill
+            else:
+                cell.fill = self.header_fill
+            
+            cell.border = self.border
+        
+        # Add data
+        for row_idx, row in enumerate(df.itertuples(index=False), 5):
+            for col_idx, value in enumerate(row, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.border = self.border
+                
+                # Format numbers in tax columns
+                col_name = df.columns[col_idx - 1]
+                if col_name in tax_columns and value and value != '':
+                    try:
+                        cell.value = float(value)
+                        cell.number_format = '#,##0.00'
+                    except:
+                        pass
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column[0].column_letter].width = adjusted_width
     
     def _write_dataframe_to_sheet(self, ws, df: pd.DataFrame, title: str):
         """Write DataFrame to worksheet with formatting"""
@@ -682,6 +898,17 @@ class ExpiryDeliveryGenerator:
         ws.cell(row=row, column=2, value=pre_cash)
         ws.cell(row=row, column=3, value=post_cash)
         ws.cell(row=row, column=4, value=post_cash - pre_cash)
+        
+        row += 1
+        
+        # ACM Records
+        pre_acm = len(pre_data.get('combined_acm', pd.DataFrame()))
+        post_acm = len(post_data.get('combined_acm', pd.DataFrame()))
+        
+        ws.cell(row=row, column=1, value="ACM Records")
+        ws.cell(row=row, column=2, value=pre_acm)
+        ws.cell(row=row, column=3, value=post_acm)
+        ws.cell(row=row, column=4, value=post_acm - pre_acm)
         
         # Apply borders
         for r in range(3, row + 1):
