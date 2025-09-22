@@ -1,6 +1,6 @@
 """
-Enhanced Unified Trade Processing Pipeline - COMPLETE VERSION WITH EXPIRY DELIVERIES
-Includes ALL features: Strategy Processing, ACM Mapping, Deliverables, PMS Recon, and Expiry Physical Delivery
+Enhanced Unified Trade Processing Pipeline - FIXED VERSION WITH WORKING EXPIRY DELIVERIES
+Complete with proper viewing and downloading of expiry delivery files
 """
 
 import streamlit as st
@@ -32,7 +32,7 @@ try:
     
     # Import Expiry Delivery Generator
     try:
-        from expiry_delivery_generator import ExpiryDeliveryGenerator
+        from expiry_delivery_module import ExpiryDeliveryGenerator
         EXPIRY_DELIVERY_AVAILABLE = True
     except ImportError:
         EXPIRY_DELIVERY_AVAILABLE = False
@@ -94,10 +94,17 @@ st.markdown("""
     }
     .expiry-card {
         background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
+        border: 2px solid #007bff;
         border-radius: 8px;
         padding: 15px;
         margin: 10px 0;
+    }
+    .deliverable-header {
+        background-color: #007bff;
+        color: white;
+        padding: 8px;
+        border-radius: 4px;
+        margin: 5px 0;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -148,6 +155,8 @@ def main():
         st.session_state.expiry_deliveries_complete = False
     if 'expiry_delivery_files' not in st.session_state:
         st.session_state.expiry_delivery_files = {}
+    if 'expiry_delivery_results' not in st.session_state:
+        st.session_state.expiry_delivery_results = {}
     
     # Sidebar
     with st.sidebar:
@@ -367,6 +376,12 @@ def main():
                     st.success("✅ Complete enhanced pipeline finished!")
                     st.balloons()
         
+        # Separate button for expiry deliveries if Stage 1 is complete
+        if EXPIRY_DELIVERY_AVAILABLE and enable_expiry_delivery and st.session_state.stage1_complete:
+            st.divider()
+            if st.button("📅 Generate Expiry Deliveries Only", type="secondary", use_container_width=True):
+                run_expiry_delivery_generation()
+        
         st.divider()
         if st.button("🔄 Reset All", type="secondary", use_container_width=True):
             for key in list(st.session_state.keys()):
@@ -374,7 +389,7 @@ def main():
             st.rerun()
     
     # Main content tabs
-    tab_list = ["📊 Pipeline Overview", "📄 Stage 1: Strategy", "📋 Stage 2: ACM"]
+    tab_list = ["📊 Pipeline Overview", "🔄 Stage 1: Strategy", "📋 Stage 2: ACM"]
     
     if NEW_FEATURES_AVAILABLE:
         if st.session_state.get('enable_deliverables', False):
@@ -382,13 +397,9 @@ def main():
         if st.session_state.get('enable_recon', False):
             tab_list.append("🔄 PMS Reconciliation")
     
-    # Make sure Expiry Deliveries tab is added when enabled
+    # Add Expiry Deliveries tab when enabled
     if EXPIRY_DELIVERY_AVAILABLE and st.session_state.get('enable_expiry_delivery', False):
         tab_list.append("📅 Expiry Deliveries")
-        # Debug info
-        if st.session_state.get('expiry_deliveries_complete', False):
-            files_count = len(st.session_state.get('expiry_delivery_files', {}))
-            st.sidebar.success(f"✅ {files_count} expiry reports generated")
     
     tab_list.extend(["📥 Downloads", "📘 Schema Info"])
     
@@ -693,7 +704,7 @@ def run_deliverables_calculation(usdinr_rate: float, fetch_prices: bool):
 def run_expiry_delivery_generation():
     """Generate physical delivery outputs per expiry date"""
     if not EXPIRY_DELIVERY_AVAILABLE:
-        st.error("Expiry Delivery Generator module not available. Please ensure expiry_delivery_generator.py is in the directory.")
+        st.error("Expiry Delivery Generator module not available. Please ensure expiry_delivery_module.py is in the directory.")
         return
     
     try:
@@ -722,13 +733,31 @@ def run_expiry_delivery_generation():
                 for df in [starting_positions, final_positions]:
                     if not df.empty and 'Symbol' in df.columns:
                         for idx, row in df.iterrows():
-                            if 'Yahoo_Price' in df.columns and pd.notna(row['Yahoo_Price']) and row['Yahoo_Price'] != 'N/A':
+                            if 'Yahoo_Price' in df.columns and pd.notna(row.get('Yahoo_Price', 'N/A')) and row.get('Yahoo_Price', 'N/A') != 'N/A':
                                 try:
                                     prices[row['Symbol']] = float(row['Yahoo_Price'])
                                 except:
                                     pass
                 
-                st.info(f"Found {len(prices)} prices from Yahoo data")
+                # If no prices from Yahoo_Price column, try to fetch
+                if not prices and st.session_state.get('fetch_prices', False):
+                    try:
+                        from position_manager import PriceFetcher
+                        fetcher = PriceFetcher()
+                        all_symbols = set()
+                        if not starting_positions.empty and 'Symbol' in starting_positions.columns:
+                            all_symbols.update(starting_positions['Symbol'].unique())
+                        if not final_positions.empty and 'Symbol' in final_positions.columns:
+                            all_symbols.update(final_positions['Symbol'].unique())
+                        
+                        for symbol in all_symbols:
+                            price = fetcher.fetch_price_for_symbol(symbol)
+                            if price:
+                                prices[symbol] = price
+                    except:
+                        pass
+                
+                st.info(f"Found {len(prices)} prices for ITM calculations")
             
             # Initialize generator
             generator = ExpiryDeliveryGenerator(usdinr_rate=st.session_state.get('usdinr_rate', 88.0))
@@ -747,10 +776,12 @@ def run_expiry_delivery_generation():
                 st.warning("No expiry positions found to process")
                 return
             
-            st.info(f"Found {len(set(list(pre_trade_results.keys()) + list(post_trade_results.keys())))} unique expiry dates")
+            all_expiries = set(list(pre_trade_results.keys()) + list(post_trade_results.keys()))
+            st.info(f"Found {len(all_expiries)} unique expiry dates")
             
             # Generate reports
             output_dir = "output/expiry_deliveries"
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
             output_files = generator.generate_expiry_reports(
                 pre_trade_results, post_trade_results, output_dir
             )
@@ -789,8 +820,10 @@ def run_pms_reconciliation(pms_file):
             st.error("Please complete Stage 1 first")
             return
         
+        temp_dir = get_temp_dir()
+        
         with st.spinner("Running PMS reconciliation..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(pms_file.name).suffix) as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(pms_file.name).suffix, dir=temp_dir) as tmp:
                 tmp.write(pms_file.getbuffer())
                 pms_path = tmp.name
             
@@ -894,11 +927,11 @@ def display_pipeline_overview():
             st.session_state.get('enable_recon')]):
         st.markdown("### Enhanced Features Enabled")
         
-        cols = st.columns(3)
+        cols = st.columns(4)
         feature_idx = 0
         
         if st.session_state.get('enable_deliverables'):
-            with cols[feature_idx % 3]:
+            with cols[feature_idx % 4]:
                 st.markdown("**💰 Deliverables/IV**")
                 if st.session_state.get('deliverables_complete'):
                     st.success("✅ Complete")
@@ -907,16 +940,17 @@ def display_pipeline_overview():
             feature_idx += 1
         
         if st.session_state.get('enable_expiry_delivery'):
-            with cols[feature_idx % 3]:
+            with cols[feature_idx % 4]:
                 st.markdown("**📅 Expiry Deliveries**")
                 if st.session_state.get('expiry_deliveries_complete'):
-                    st.success("✅ Complete")
+                    files = st.session_state.get('expiry_delivery_files', {})
+                    st.success(f"✅ {len(files)} files")
                 else:
                     st.info("⏳ Pending")
             feature_idx += 1
         
         if st.session_state.get('enable_recon'):
-            with cols[feature_idx % 3]:
+            with cols[feature_idx % 4]:
                 st.markdown("**🔄 PMS Reconciliation**")
                 if st.session_state.get('recon_complete'):
                     st.success("✅ Complete")
@@ -1045,28 +1079,44 @@ def display_deliverables_tab():
             st.dataframe(comparison, use_container_width=True, hide_index=True)
 
 def display_expiry_deliveries_tab():
-    """Display expiry delivery results"""
+    """Display expiry delivery results with both viewing and downloading"""
     st.header("📅 Expiry Physical Deliveries")
     
+    # Check if generation has been run
     if not st.session_state.get('expiry_deliveries_complete'):
-        st.info("Run the pipeline with expiry deliveries enabled to see this analysis")
+        st.warning("⚠️ Expiry deliveries have not been generated yet")
+        
+        # Add button to generate if Stage 1 is complete
+        if st.session_state.get('stage1_complete'):
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                if st.button("🚀 Generate Expiry Deliveries Now", type="primary", use_container_width=True):
+                    run_expiry_delivery_generation()
+                    st.rerun()
+        else:
+            st.info("Complete Stage 1 first, then generate expiry deliveries")
         return
     
+    # Get results from session state
     results = st.session_state.get('expiry_delivery_results', {})
     files = st.session_state.get('expiry_delivery_files', {})
     
     if not results and not files:
-        st.warning("No expiry delivery data available")
+        st.error("No expiry delivery data available. Please regenerate.")
+        if st.button("🔄 Regenerate Expiry Deliveries", type="secondary"):
+            run_expiry_delivery_generation()
+            st.rerun()
         return
     
-    # Summary metrics
-    col1, col2, col3 = st.columns(3)
+    # Display summary metrics
+    st.markdown("### 📊 Summary")
+    col1, col2, col3, col4 = st.columns(4)
     
     pre_results = results.get('pre_trade', {})
     post_results = results.get('post_trade', {})
     
     with col1:
-        st.metric("Expiry Dates", len(files))
+        st.metric("Expiry Dates", len(set(list(pre_results.keys()) + list(post_results.keys()))))
     
     with col2:
         pre_count = sum(len(data.get('derivatives', pd.DataFrame())) for data in pre_results.values())
@@ -1076,136 +1126,237 @@ def display_expiry_deliveries_tab():
         post_count = sum(len(data.get('derivatives', pd.DataFrame())) for data in post_results.values())
         st.metric("Post-Trade Deliveries", post_count)
     
-    # Download section
+    with col4:
+        st.metric("Files Generated", len(files))
+    
+    st.markdown("---")
+    
+    # Section 1: Download all files
     st.markdown("### 📥 Download Expiry Reports")
     
     if files:
-        # Create a grid of download buttons
-        cols = st.columns(3)
-        for idx, (expiry_date, file_path) in enumerate(sorted(files.items())):
-            col_idx = idx % 3
-            with cols[col_idx]:
-                try:
-                    with open(file_path, 'rb') as f:
-                        st.download_button(
-                            f"📅 {expiry_date.strftime('%Y-%m-%d')}",
-                            data=f.read(),
-                            file_name=f"EXPIRY_{expiry_date.strftime('%Y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
-                            key=f"dl_expiry_{expiry_date}"
-                        )
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+        # Show all available files
+        st.success(f"✅ {len(files)} expiry report(s) ready for download")
+        
+        # Create download buttons in a grid
+        n_files = len(files)
+        n_cols = min(3, n_files)
+        
+        if n_cols > 0:
+            cols = st.columns(n_cols)
+            for idx, (expiry_date, file_path) in enumerate(sorted(files.items())):
+                col_idx = idx % n_cols
+                with cols[col_idx]:
+                    try:
+                        # Check if file exists
+                        if Path(file_path).exists():
+                            with open(file_path, 'rb') as f:
+                                file_data = f.read()
+                            
+                            # Create expiry card
+                            with st.container():
+                                st.markdown(f'<div class="expiry-card">', unsafe_allow_html=True)
+                                st.markdown(f"**📅 {expiry_date.strftime('%B %d, %Y')}**")
+                                st.download_button(
+                                    f"Download Report",
+                                    data=file_data,
+                                    file_name=f"EXPIRY_{expiry_date.strftime('%Y%m%d')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True,
+                                    key=f"dl_exp_{expiry_date.strftime('%Y%m%d')}"
+                                )
+                                st.markdown('</div>', unsafe_allow_html=True)
+                        else:
+                            st.error(f"File not found: {Path(file_path).name}")
+                    except Exception as e:
+                        st.error(f"Error loading {expiry_date}: {str(e)}")
+    else:
+        st.warning("No files available for download")
     
-    # Detailed view by expiry
-    st.markdown("### 📊 Expiry Details")
+    st.markdown("---")
+    
+    # Section 2: View detailed data
+    st.markdown("### 📋 View Expiry Details")
     
     if pre_results or post_results:
         all_expiries = sorted(set(list(pre_results.keys()) + list(post_results.keys())))
         
-        selected_expiry = st.selectbox(
-            "Select Expiry Date",
-            options=all_expiries,
-            format_func=lambda x: x.strftime('%Y-%m-%d')
-        )
+        col1, col2 = st.columns([2, 3])
+        
+        with col1:
+            selected_expiry = st.selectbox(
+                "Select Expiry Date to View",
+                options=all_expiries,
+                format_func=lambda x: x.strftime('%B %d, %Y (%a)')
+            )
+        
+        with col2:
+            if selected_expiry and selected_expiry in files:
+                file_path = files[selected_expiry]
+                if Path(file_path).exists():
+                    with open(file_path, 'rb') as f:
+                        st.download_button(
+                            f"📥 Download {selected_expiry.strftime('%Y-%m-%d')} Report",
+                            data=f.read(),
+                            file_name=f"EXPIRY_{selected_expiry.strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key=f"dl_selected_{selected_expiry.strftime('%Y%m%d')}"
+                        )
         
         if selected_expiry:
-            tabs = st.tabs(["Pre-Trade", "Post-Trade", "Comparison"])
+            st.markdown(f"#### Expiry Date: {selected_expiry.strftime('%B %d, %Y')}")
+            
+            tabs = st.tabs(["📈 Pre-Trade", "📉 Post-Trade", "🔄 Comparison"])
             
             with tabs[0]:
-                pre_data = pre_results.get(selected_expiry, {})
-                if pre_data:
-                    st.markdown(f"**Positions:** {pre_data.get('position_count', 0)}")
-                    
-                    # Show derivatives
-                    deriv_df = pre_data.get('derivatives', pd.DataFrame())
-                    if not deriv_df.empty:
-                        st.markdown("**Derivative Trades:**")
-                        st.dataframe(deriv_df, use_container_width=True, hide_index=True)
-                    
-                    # Show cash trades
-                    cash_df = pre_data.get('cash_trades', pd.DataFrame())
-                    if not cash_df.empty:
-                        st.markdown("**Cash Trades:**")
-                        st.info("Trade Notes: E=Exercise (long options), A=Assignment (short options)")
-                        st.dataframe(cash_df, use_container_width=True, hide_index=True)
-                    
-                    # Show summary
-                    summary_df = pre_data.get('cash_summary', pd.DataFrame())
-                    if not summary_df.empty:
-                        st.markdown("**Cash Summary:**")
-                        
-                        def highlight_rows(row):
-                            if 'NET DELIVERABLE' in str(row.get('Type', '')) or 'GRAND TOTAL' in str(row.get('Underlying', '')):
-                                return ['background-color: lightblue; font-weight: bold'] * len(row)
-                            return [''] * len(row)
-                        
-                        styled_df = summary_df.style.apply(highlight_rows, axis=1)
-                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No pre-trade positions for this expiry")
+                display_expiry_data(pre_results.get(selected_expiry, {}), "Pre-Trade")
             
             with tabs[1]:
-                post_data = post_results.get(selected_expiry, {})
-                if post_data:
-                    st.markdown(f"**Positions:** {post_data.get('position_count', 0)}")
-                    
-                    # Show derivatives
-                    deriv_df = post_data.get('derivatives', pd.DataFrame())
-                    if not deriv_df.empty:
-                        st.markdown("**Derivative Trades:**")
-                        st.dataframe(deriv_df, use_container_width=True, hide_index=True)
-                    
-                    # Show cash trades
-                    cash_df = post_data.get('cash_trades', pd.DataFrame())
-                    if not cash_df.empty:
-                        st.markdown("**Cash Trades:**")
-                        st.info("Trade Notes: E=Exercise (long options), A=Assignment (short options)")
-                        st.dataframe(cash_df, use_container_width=True, hide_index=True)
-                    
-                    # Show summary
-                    summary_df = post_data.get('cash_summary', pd.DataFrame())
-                    if not summary_df.empty:
-                        st.markdown("**Cash Summary:**")
-                        
-                        def highlight_rows(row):
-                            if 'NET DELIVERABLE' in str(row.get('Type', '')) or 'GRAND TOTAL' in str(row.get('Underlying', '')):
-                                return ['background-color: lightblue; font-weight: bold'] * len(row)
-                            return [''] * len(row)
-                        
-                        styled_df = summary_df.style.apply(highlight_rows, axis=1)
-                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("No post-trade positions for this expiry")
+                display_expiry_data(post_results.get(selected_expiry, {}), "Post-Trade")
             
             with tabs[2]:
-                pre_data = pre_results.get(selected_expiry, {})
-                post_data = post_results.get(selected_expiry, {})
-                
-                if pre_data and post_data:
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("**Pre-Trade Metrics:**")
-                        pre_deriv = len(pre_data.get('derivatives', pd.DataFrame()))
-                        pre_cash = len(pre_data.get('cash_trades', pd.DataFrame()))
-                        st.write(f"- Derivatives: {pre_deriv}")
-                        st.write(f"- Cash Trades: {pre_cash}")
-                    
-                    with col2:
-                        st.markdown("**Post-Trade Metrics:**")
-                        post_deriv = len(post_data.get('derivatives', pd.DataFrame()))
-                        post_cash = len(post_data.get('cash_trades', pd.DataFrame()))
-                        st.write(f"- Derivatives: {post_deriv}")
-                        st.write(f"- Cash Trades: {post_cash}")
-                    
-                    # Show changes
-                    st.markdown("**Changes:**")
-                    st.write(f"- Derivative Trades: {post_deriv - pre_deriv:+d}")
-                    st.write(f"- Cash Trades: {post_cash - pre_cash:+d}")
+                display_expiry_comparison(
+                    pre_results.get(selected_expiry, {}),
+                    post_results.get(selected_expiry, {})
+                )
+    else:
+        st.info("No expiry data available to view")
+
+def display_expiry_data(expiry_data: dict, stage: str):
+    """Helper function to display expiry data"""
+    if not expiry_data:
+        st.info(f"No {stage.lower()} positions for this expiry")
+        return
+    
+    st.markdown(f'<div class="deliverable-header">{stage} Positions: {expiry_data.get("position_count", 0)}</div>', 
+                unsafe_allow_html=True)
+    
+    # Derivatives section
+    deriv_df = expiry_data.get('derivatives', pd.DataFrame())
+    if not deriv_df.empty:
+        with st.expander(f"📊 Derivative Trades ({len(deriv_df)} positions)", expanded=True):
+            # Add color coding for Buy/Sell
+            def color_buysell(val):
+                if val == 'Buy':
+                    return 'background-color: #90EE90'
+                elif val == 'Sell':
+                    return 'background-color: #FFB6C1'
+                return ''
+            
+            styled_df = deriv_df.style.applymap(color_buysell, subset=['Buy/Sell'])
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    
+    # Cash trades section
+    cash_df = expiry_data.get('cash_trades', pd.DataFrame())
+    if not cash_df.empty:
+        with st.expander(f"💵 Cash Trades ({len(cash_df)} trades)", expanded=True):
+            st.info("📌 Trade Notes: **E** = Exercise (long options), **A** = Assignment (short options)")
+            
+            # Highlight trade notes
+            def highlight_tradenotes(val):
+                if val == 'E':
+                    return 'background-color: #90EE90; font-weight: bold'
+                elif val == 'A':
+                    return 'background-color: #FFB6C1; font-weight: bold'
+                return ''
+            
+            styled_cash = cash_df.style.applymap(highlight_tradenotes, subset=['tradenotes'])
+            st.dataframe(styled_cash, use_container_width=True, hide_index=True)
+    
+    # Cash summary section
+    summary_df = expiry_data.get('cash_summary', pd.DataFrame())
+    if not summary_df.empty:
+        with st.expander("💰 Cash Summary & Net Deliverables", expanded=True):
+            # Highlight NET and GRAND TOTAL rows
+            def highlight_summary(row):
+                if 'NET DELIVERABLE' in str(row.get('Type', '')):
+                    return ['background-color: #ADD8E6; font-weight: bold'] * len(row)
+                elif 'GRAND TOTAL' in str(row.get('Underlying', '')):
+                    return ['background-color: #FFD700; font-weight: bold; font-size: 110%'] * len(row)
+                elif row.get('Type') == 'Trade':
+                    return [''] * len(row)
                 else:
-                    st.info("Comparison requires both pre and post trade data")
+                    return ['background-color: #F5F5F5'] * len(row)
+            
+            styled_summary = summary_df.style.apply(highlight_summary, axis=1)
+            st.dataframe(styled_summary, use_container_width=True, hide_index=True)
+            
+            # Show key metrics
+            if 'GRAND TOTAL' in summary_df['Underlying'].values:
+                grand_total_row = summary_df[summary_df['Underlying'] == 'GRAND TOTAL'].iloc[0]
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Consideration", f"₹{grand_total_row.get('Consideration', 0):,.2f}")
+                with col2:
+                    st.metric("Total STT", f"₹{grand_total_row.get('STT', 0):,.2f}")
+                with col3:
+                    st.metric("Total Taxes", f"₹{grand_total_row.get('Taxes', 0):,.2f}")
+
+def display_expiry_comparison(pre_data: dict, post_data: dict):
+    """Display comparison between pre and post trade for an expiry"""
+    if not pre_data and not post_data:
+        st.info("No data available for comparison")
+        return
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("##### Pre-Trade Metrics")
+        pre_deriv = len(pre_data.get('derivatives', pd.DataFrame()))
+        pre_cash = len(pre_data.get('cash_trades', pd.DataFrame()))
+        st.write(f"📊 Derivatives: **{pre_deriv}**")
+        st.write(f"💵 Cash Trades: **{pre_cash}**")
+        
+        # Get total consideration
+        pre_summary = pre_data.get('cash_summary', pd.DataFrame())
+        if not pre_summary.empty and 'GRAND TOTAL' in pre_summary['Underlying'].values:
+            pre_total = pre_summary[pre_summary['Underlying'] == 'GRAND TOTAL'].iloc[0]
+            st.write(f"💰 Consideration: **₹{pre_total.get('Consideration', 0):,.2f}**")
+    
+    with col2:
+        st.markdown("##### Post-Trade Metrics")
+        post_deriv = len(post_data.get('derivatives', pd.DataFrame()))
+        post_cash = len(post_data.get('cash_trades', pd.DataFrame()))
+        st.write(f"📊 Derivatives: **{post_deriv}**")
+        st.write(f"💵 Cash Trades: **{post_cash}**")
+        
+        # Get total consideration
+        post_summary = post_data.get('cash_summary', pd.DataFrame())
+        if not post_summary.empty and 'GRAND TOTAL' in post_summary['Underlying'].values:
+            post_total = post_summary[post_summary['Underlying'] == 'GRAND TOTAL'].iloc[0]
+            st.write(f"💰 Consideration: **₹{post_total.get('Consideration', 0):,.2f}**")
+    
+    st.markdown("---")
+    
+    # Show changes
+    st.markdown("##### 📈 Changes Due to Trading")
+    
+    change_col1, change_col2, change_col3 = st.columns(3)
+    
+    with change_col1:
+        deriv_change = post_deriv - pre_deriv
+        color = "🟢" if deriv_change < 0 else "🔴" if deriv_change > 0 else "⚪"
+        st.metric("Derivative Positions", f"{deriv_change:+d}", delta=f"{color}")
+    
+    with change_col2:
+        cash_change = post_cash - pre_cash
+        color = "🟢" if cash_change < 0 else "🔴" if cash_change > 0 else "⚪"
+        st.metric("Cash Trades", f"{cash_change:+d}", delta=f"{color}")
+    
+    with change_col3:
+        pre_consid = 0
+        post_consid = 0
+        
+        if not pre_summary.empty and 'GRAND TOTAL' in pre_summary['Underlying'].values:
+            pre_consid = pre_summary[pre_summary['Underlying'] == 'GRAND TOTAL'].iloc[0].get('Consideration', 0)
+        
+        if not post_summary.empty and 'GRAND TOTAL' in post_summary['Underlying'].values:
+            post_consid = post_summary[post_summary['Underlying'] == 'GRAND TOTAL'].iloc[0].get('Consideration', 0)
+        
+        consid_change = post_consid - pre_consid
+        st.metric("Net Consideration", f"₹{consid_change:+,.2f}")
 
 def display_reconciliation_tab():
     """Display PMS reconciliation results"""
@@ -1252,11 +1403,12 @@ def display_downloads():
     """Display download section"""
     st.header("📥 Download Outputs")
     
-    # Check if we need 4 columns instead of 3
+    # Determine number of columns needed
+    n_cols = 3
     if st.session_state.get('expiry_deliveries_complete', False):
-        cols = st.columns(4)
-    else:
-        cols = st.columns(3)
+        n_cols = 4
+    
+    cols = st.columns(n_cols)
     
     with cols[0]:
         st.markdown("### Stage 1 Outputs")
@@ -1365,23 +1517,25 @@ def display_downloads():
             
             files = st.session_state.get('expiry_delivery_files', {})
             if files:
-                # Show count of files
-                st.info(f"Generated {len(files)} expiry reports")
+                st.success(f"✅ {len(files)} reports ready")
                 
-                # Download buttons for each expiry
-                for expiry_date, file_path in sorted(files.items()):
+                # Show first 3 files as download buttons
+                for idx, (expiry_date, file_path) in enumerate(sorted(files.items())[:3]):
                     try:
                         with open(file_path, 'rb') as f:
                             st.download_button(
-                                f"📅 {expiry_date.strftime('%Y-%m-%d')}",
+                                f"📅 {expiry_date.strftime('%m/%d')}",
                                 data=f.read(),
                                 file_name=f"EXPIRY_{expiry_date.strftime('%Y%m%d')}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True,
-                                key=f"dl_main_expiry_{expiry_date.strftime('%Y%m%d')}"
+                                key=f"dl_quick_exp_{idx}"
                             )
-                    except Exception as e:
-                        st.error(f"Error loading {expiry_date}: {str(e)}")
+                    except:
+                        pass
+                
+                if len(files) > 3:
+                    st.info(f"+ {len(files) - 3} more in Expiry tab")
             else:
                 st.warning("No expiry files generated")
 
@@ -1443,7 +1597,7 @@ def display_schema_info():
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    Enhanced Trade Processing Pipeline v3.5 | Complete with Expiry Physical Delivery
+    Enhanced Trade Processing Pipeline v4.0 | Complete with Working Expiry Physical Delivery
 </div>
 """, unsafe_allow_html=True)
 
