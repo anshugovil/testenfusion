@@ -2,6 +2,7 @@
 Expiry Delivery Generator Module - ENHANCED WITH ACM FORMAT OUTPUT
 Generates physical delivery trades and cash settlements per expiry date
 Now includes ACM ListedTrades format output for expiry trades with tax columns
+All dates are formatted as simple dates (YYYY-MM-DD)
 """
 
 import pandas as pd
@@ -83,12 +84,20 @@ class ExpiryDeliveryGenerator:
         if positions_df.empty:
             return {}
         
-        # Ensure Expiry is datetime
+        # Ensure Expiry is datetime for grouping (but keep display as date)
         positions_df = positions_df.copy()
-        positions_df['Expiry'] = pd.to_datetime(positions_df['Expiry'])
+        
+        # Handle both datetime and string date formats
+        if positions_df['Expiry'].dtype == 'object':
+            positions_df['Expiry_dt'] = pd.to_datetime(positions_df['Expiry'])
+        else:
+            positions_df['Expiry_dt'] = pd.to_datetime(positions_df['Expiry'])
+        
+        # Keep original Expiry column as date string for display
+        positions_df['Expiry'] = positions_df['Expiry_dt'].dt.strftime('%Y-%m-%d')
         
         # Group by expiry date
-        expiry_groups = positions_df.groupby(positions_df['Expiry'].dt.date)
+        expiry_groups = positions_df.groupby(positions_df['Expiry_dt'].dt.date)
         
         results = {}
         
@@ -137,6 +146,9 @@ class ExpiryDeliveryGenerator:
         cash_trades_list = []
         errors_list = []
         
+        # Format expiry date as string for output
+        expiry_date_str = expiry_date.strftime('%Y-%m-%d') if hasattr(expiry_date, 'strftime') else str(expiry_date)
+        
         for idx, row in group_df.iterrows():
             try:
                 # Get price for this position
@@ -147,21 +159,21 @@ class ExpiryDeliveryGenerator:
                         'Symbol': row['Symbol'],
                         'Ticker': row['Ticker'],
                         'Reason': 'No price available',
-                        'Expiry': expiry_date
+                        'Expiry': expiry_date_str
                     })
                     continue
                 
                 # Process based on security type
                 if row['Security_Type'] == 'Futures':
-                    deriv, cash = self._process_futures(row, last_price)
+                    deriv, cash = self._process_futures(row, last_price, expiry_date_str)
                 elif row['Security_Type'] in ['Call', 'Put']:
-                    deriv, cash = self._process_option(row, last_price)
+                    deriv, cash = self._process_option(row, last_price, expiry_date_str)
                 else:
                     errors_list.append({
                         'Symbol': row['Symbol'],
                         'Ticker': row['Ticker'],
                         'Reason': f"Unknown security type: {row['Security_Type']}",
-                        'Expiry': expiry_date
+                        'Expiry': expiry_date_str
                     })
                     continue
                 
@@ -175,7 +187,7 @@ class ExpiryDeliveryGenerator:
                     'Symbol': row.get('Symbol', 'N/A'),
                     'Ticker': row.get('Ticker', 'N/A'),
                     'Reason': str(e),
-                    'Expiry': expiry_date
+                    'Expiry': expiry_date_str
                 })
         
         # Create DataFrames
@@ -294,7 +306,7 @@ class ExpiryDeliveryGenerator:
         ticker_upper = str(ticker).upper()
         return 'INDEX' in ticker_upper or any(idx in ticker_upper for idx in ['NIFTY', 'NZ', 'AF1', 'NSEBANK', 'RNS', 'NMIDSELP'])
     
-    def _process_futures(self, row: pd.Series, last_price: float) -> Tuple[Dict, Optional[Dict]]:
+    def _process_futures(self, row: pd.Series, last_price: float, expiry_date_str: str) -> Tuple[Dict, Optional[Dict]]:
         """Process futures position at expiry"""
         position = float(row['Lots'])
         lot_size = float(row['Lot_Size'])
@@ -319,7 +331,7 @@ class ExpiryDeliveryGenerator:
         derivative = {
             'Underlying': underlying,
             'Symbol': ticker,
-            'Expiry': row['Expiry'],
+            'Expiry': expiry_date_str,  # Use formatted date string
             'Buy/Sell': 'Sell' if position > 0 else 'Buy',
             'Strategy': 'FULO' if position > 0 else 'FUSH',
             'Position': abs(position),
@@ -364,7 +376,7 @@ class ExpiryDeliveryGenerator:
         
         return derivative, cash
     
-    def _process_option(self, row: pd.Series, last_price: float) -> Tuple[Dict, Optional[Dict]]:
+    def _process_option(self, row: pd.Series, last_price: float, expiry_date_str: str) -> Tuple[Dict, Optional[Dict]]:
         """Process option position at expiry"""
         position = float(row['Lots'])
         lot_size = float(row['Lot_Size'])
@@ -428,7 +440,7 @@ class ExpiryDeliveryGenerator:
         derivative = {
             'Underlying': underlying,
             'Symbol': ticker,
-            'Expiry': row['Expiry'],
+            'Expiry': expiry_date_str,  # Use formatted date string
             'Buy/Sell': deriv_buy_sell,
             'Strategy': deriv_strategy,
             'Position': abs(position),
@@ -729,12 +741,14 @@ class ExpiryDeliveryGenerator:
                 # Also save ACM CSV files for direct import
                 if post_data and not post_data.get('combined_acm', pd.DataFrame()).empty:
                     acm_csv_file = output_path / f"EXPIRY_ACM_{date_str}_PostTrade.csv"
-                    post_data['combined_acm'].to_csv(acm_csv_file, index=False, date_format='%m/%d/%Y')
+                    # Save with dates in simple format except for Trade Date
+                    post_data['combined_acm'].to_csv(acm_csv_file, index=False)
                     logger.info(f"Generated ACM CSV: {acm_csv_file}")
                 
                 if pre_data and not pre_data.get('combined_acm', pd.DataFrame()).empty:
                     acm_csv_file = output_path / f"EXPIRY_ACM_{date_str}_PreTrade.csv"
-                    pre_data['combined_acm'].to_csv(acm_csv_file, index=False, date_format='%m/%d/%Y')
+                    # Save with dates in simple format except for Trade Date
+                    pre_data['combined_acm'].to_csv(acm_csv_file, index=False)
                     logger.info(f"Generated ACM CSV: {acm_csv_file}")
                     
             else:
