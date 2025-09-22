@@ -1,6 +1,6 @@
 """
-Position Manager Module - WITH YAHOO FINANCE INTEGRATION
-Tracks all position details and fetches live prices from Yahoo Finance
+Position Manager Module - WITH UNDERLYING PRICE FETCHING
+Fetches underlying security prices for ITM/OTM analysis
 """
 
 from dataclasses import dataclass, field
@@ -22,8 +22,7 @@ logger = logging.getLogger(__name__)
 
 class PriceFetcher:
     """
-    Integrated price fetcher using Yahoo Finance
-    Based on proven working implementation
+    Price fetcher for underlying securities only
     """
     
     def __init__(self):
@@ -44,12 +43,11 @@ class PriceFetcher:
         price = dummy_prices.get(symbol.upper())
         if price:
             return float(price)
-        # Generate consistent dummy price based on symbol
         return float(500 + (hash(symbol) % 3500))
     
-    def fetch_price_for_symbol(self, symbol: str) -> float:
+    def fetch_underlying_price(self, symbol: str) -> float:
         """
-        Fetch price for a single symbol with multiple fallbacks
+        Fetch price for underlying security
         """
         # Check cache first
         if symbol in self.price_cache:
@@ -139,12 +137,34 @@ class PositionDetails:
         self.qty = self.lots * self.lot_size
         self.direction = "Long" if self.lots > 0 else "Short" if self.lots < 0 else "Flat"
     
+    def get_moneyness(self, underlying_price: float) -> str:
+        """
+        Calculate moneyness for options
+        Returns: ITM, ATM, OTM, or N/A for futures
+        """
+        if self.security_type == 'Call':
+            if underlying_price > self.strike * 1.01:  # 1% buffer for ATM
+                return "ITM"
+            elif underlying_price < self.strike * 0.99:
+                return "OTM"
+            else:
+                return "ATM"
+        elif self.security_type == 'Put':
+            if underlying_price < self.strike * 0.99:  # 1% buffer for ATM
+                return "ITM"
+            elif underlying_price > self.strike * 1.01:
+                return "OTM"
+            else:
+                return "ATM"
+        else:
+            return "N/A"  # Futures don't have moneyness
+    
     def __repr__(self):
         return f"Position({self.ticker}, {self.lots} lots @ {self.lot_size}, {self.strategy})"
 
 
 class PositionManager:
-    """Manages positions with complete tracking and Yahoo Finance integration"""
+    """Manages positions with complete tracking and underlying price fetching"""
     
     def __init__(self):
         self.positions: Dict[str, PositionDetails] = {}
@@ -155,8 +175,8 @@ class PositionManager:
     
     def initialize_from_positions(self, initial_positions: List) -> pd.DataFrame:
         """
-        Initialize position manager with existing positions from input parser
-        Returns DataFrame with Yahoo prices
+        Initialize position manager with existing positions
+        Returns DataFrame with underlying prices
         """
         self.positions.clear()
         self.ticker_details_map.clear()
@@ -220,8 +240,8 @@ class PositionManager:
         # Create DataFrame
         self.initial_positions_df = pd.DataFrame(positions_data)
         
-        # Add Yahoo prices
-        self.initial_positions_df = self.add_yahoo_prices(self.initial_positions_df)
+        # Add underlying prices and moneyness
+        self.initial_positions_df = self.add_underlying_prices(self.initial_positions_df)
         
         return self.initial_positions_df
     
@@ -302,17 +322,54 @@ class PositionManager:
         return (position.lots > 0 and trade_quantity < 0) or \
                (position.lots < 0 and trade_quantity > 0)
     
+    def extract_underlying_symbol(self, symbol: str, security_type: str) -> str:
+        """
+        Extract the underlying symbol from option/future symbol
+        Examples:
+        - RELIANCE-FUT -> RELIANCE
+        - NIFTY23MAR23000CE -> NIFTY
+        - TCS -> TCS
+        """
+        # Clean common suffixes
+        clean_symbol = str(symbol).upper()
+        
+        # Remove option/future suffixes
+        for suffix in ['-FUT', '-CE', '-PE', 'FUT', 'CE', 'PE']:
+            if clean_symbol.endswith(suffix):
+                clean_symbol = clean_symbol[:-len(suffix)]
+                break
+        
+        # Remove dates and strikes (for options)
+        # This is simplified - enhance based on your symbol format
+        import re
+        # Remove numbers at the end
+        clean_symbol = re.sub(r'\d+$', '', clean_symbol)
+        # Remove common date patterns
+        clean_symbol = re.sub(r'\d{2}[A-Z]{3}\d{2}', '', clean_symbol)
+        
+        # Special cases for indices
+        if 'NIFTY' in clean_symbol:
+            if 'BANK' in clean_symbol:
+                return 'BANKNIFTY'
+            elif 'FIN' in clean_symbol:
+                return 'FINNIFTY'
+            elif 'MID' in clean_symbol:
+                return 'MIDCPNIFTY'
+            else:
+                return 'NIFTY'
+        
+        return clean_symbol.strip()
+    
     def get_final_positions(self) -> pd.DataFrame:
         """
-        Get final positions with same structure as starting positions
-        Includes Yahoo Finance prices
+        Get final positions with underlying prices
         """
         if not self.positions:
             # Return empty DataFrame with correct structure
             return pd.DataFrame(columns=[
                 'Ticker', 'Symbol', 'Security_Type', 'Expiry', 'Strike',
                 'Lots', 'Lot_Size', 'QTY', 'Strategy', 'Direction',
-                'Underlying', 'Yahoo_Price', 'Market_Value'
+                'Underlying', 'Underlying_Price', 'Moneyness'
             ])
         
         positions_data = []
@@ -337,120 +394,105 @@ class PositionManager:
         # Sort by ticker
         final_df = final_df.sort_values('Ticker').reset_index(drop=True)
         
-        # Add Yahoo prices
-        final_df = self.add_yahoo_prices(final_df)
+        # Add underlying prices and moneyness
+        final_df = self.add_underlying_prices(final_df)
         
         # Log summary
         logger.info(f"Final positions: {len(final_df)} positions")
         if len(final_df) > 0:
-            total_value = final_df['Market_Value'].sum()
-            logger.info(f"  Total market value: ₹{total_value:,.0f}")
+            itm_count = len(final_df[final_df['Moneyness'] == 'ITM'])
+            otm_count = len(final_df[final_df['Moneyness'] == 'OTM'])
+            logger.info(f"  ITM options: {itm_count}, OTM options: {otm_count}")
         
         return final_df
     
-    def add_yahoo_prices(self, df: pd.DataFrame) -> pd.DataFrame:
+    def add_underlying_prices(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Add Yahoo Finance prices to positions DataFrame
+        Add underlying security prices and moneyness to positions DataFrame
         """
         if df.empty:
             return df
         
         df = df.copy()
         
-        # Add price columns if they don't exist
-        if 'Yahoo_Price' not in df.columns:
-            df['Yahoo_Price'] = 0.0
-        if 'Market_Value' not in df.columns:
-            df['Market_Value'] = 0.0
+        # Add columns if they don't exist
+        if 'Underlying_Price' not in df.columns:
+            df['Underlying_Price'] = 0.0
+        if 'Moneyness' not in df.columns:
+            df['Moneyness'] = ''
         
-        logger.info(f"Fetching Yahoo Finance prices for {len(df)} positions...")
+        logger.info(f"Fetching underlying prices for {len(df)} positions...")
         
-        # Get unique symbols to fetch
-        unique_symbols = df['Symbol'].unique()
+        # Get unique underlying symbols
+        underlying_symbols = set()
+        for idx, row in df.iterrows():
+            # Extract underlying symbol from the position symbol
+            underlying = self.extract_underlying_symbol(row['Symbol'], row['Security_Type'])
+            underlying_symbols.add(underlying)
         
-        # Fetch prices for all unique symbols
-        for symbol in unique_symbols:
+        # Fetch prices for all unique underlying symbols
+        underlying_prices = {}
+        for symbol in underlying_symbols:
             try:
-                # Clean symbol (remove any suffixes)
-                clean_symbol = str(symbol).split('-')[0].split('.')[0].upper()
-                
-                # Get price
-                price = self.price_fetcher.fetch_price_for_symbol(clean_symbol)
-                
-                # Update all rows with this symbol
-                mask = df['Symbol'] == symbol
-                df.loc[mask, 'Yahoo_Price'] = price
-                
-                # Calculate market value
-                # For options/futures, this is simplified - you might want more complex pricing
-                for idx in df[mask].index:
-                    qty = df.loc[idx, 'QTY']
-                    security_type = df.loc[idx, 'Security_Type']
-                    
-                    if security_type == 'Futures':
-                        # Futures: price * qty
-                        market_value = price * qty
-                    elif security_type in ['Call', 'Put']:
-                        # Options: simplified - you'd normally use Black-Scholes or market price
-                        # For now, using a simple intrinsic value calculation
-                        strike = df.loc[idx, 'Strike']
-                        if security_type == 'Call':
-                            intrinsic = max(0, price - strike)
-                        else:  # Put
-                            intrinsic = max(0, strike - price)
-                        # Rough option value (intrinsic + some time value)
-                        option_price = intrinsic + (price * 0.02)  # 2% time value assumption
-                        market_value = option_price * qty
-                    else:
-                        # Regular stock
-                        market_value = price * qty
-                    
-                    df.loc[idx, 'Market_Value'] = market_value
-                
+                price = self.price_fetcher.fetch_underlying_price(symbol)
+                underlying_prices[symbol] = price
                 logger.info(f"  {symbol}: ₹{price:,.2f}")
-                
             except Exception as e:
                 logger.warning(f"Could not fetch price for {symbol}: {e}")
-                mask = df['Symbol'] == symbol
-                df.loc[mask, 'Yahoo_Price'] = 0.0
-                df.loc[mask, 'Market_Value'] = 0.0
+                underlying_prices[symbol] = 0.0
         
-        # Round values for display
-        df['Yahoo_Price'] = df['Yahoo_Price'].round(2)
-        df['Market_Value'] = df['Market_Value'].round(2)
+        # Update each position with underlying price and moneyness
+        for idx, row in df.iterrows():
+            underlying_symbol = self.extract_underlying_symbol(row['Symbol'], row['Security_Type'])
+            underlying_price = underlying_prices.get(underlying_symbol, 0.0)
+            
+            df.at[idx, 'Underlying_Price'] = underlying_price
+            
+            # Calculate moneyness for options
+            if row['Security_Type'] == 'Call' and underlying_price > 0:
+                strike = row['Strike']
+                if underlying_price > strike * 1.01:
+                    df.at[idx, 'Moneyness'] = 'ITM'
+                elif underlying_price < strike * 0.99:
+                    df.at[idx, 'Moneyness'] = 'OTM'
+                else:
+                    df.at[idx, 'Moneyness'] = 'ATM'
+            elif row['Security_Type'] == 'Put' and underlying_price > 0:
+                strike = row['Strike']
+                if underlying_price < strike * 0.99:
+                    df.at[idx, 'Moneyness'] = 'ITM'
+                elif underlying_price > strike * 1.01:
+                    df.at[idx, 'Moneyness'] = 'OTM'
+                else:
+                    df.at[idx, 'Moneyness'] = 'ATM'
+            elif row['Security_Type'] == 'Futures':
+                df.at[idx, 'Moneyness'] = 'N/A'
+            else:
+                df.at[idx, 'Moneyness'] = ''
         
-        # Add total row if there are positions
-        if len(df) > 0:
-            total_market_value = df['Market_Value'].sum()
-            logger.info(f"Total portfolio value: ₹{total_market_value:,.2f}")
+        # Round prices for display
+        df['Underlying_Price'] = df['Underlying_Price'].round(2)
         
         return df
     
     def get_position_summary(self) -> Dict:
-        """Get summary statistics with valuations"""
+        """Get summary statistics"""
         if not self.positions:
             return {
                 'total_positions': 0,
                 'long_positions': 0,
                 'short_positions': 0,
-                'total_value': 0,
                 'by_security_type': {},
                 'by_strategy': {}
             }
         
-        # Get current positions as DataFrame for valuation
-        current_df = self.get_final_positions()
-        
         long_count = sum(1 for p in self.positions.values() if p.lots > 0)
         short_count = sum(1 for p in self.positions.values() if p.lots < 0)
-        total_value = current_df['Market_Value'].sum() if not current_df.empty else 0
         
-        # Count by security type
         by_type = {}
         for p in self.positions.values():
             by_type[p.security_type] = by_type.get(p.security_type, 0) + 1
         
-        # Count by strategy
         by_strategy = {}
         for p in self.positions.values():
             by_strategy[p.strategy] = by_strategy.get(p.strategy, 0) + 1
@@ -459,7 +501,6 @@ class PositionManager:
             'total_positions': len(self.positions),
             'long_positions': long_count,
             'short_positions': short_count,
-            'total_value': total_value,
             'by_security_type': by_type,
             'by_strategy': by_strategy
         }
