@@ -1,12 +1,17 @@
 """
-ACM Mapper Module
-Transforms processed trades to ACM ListedTrades format
+ACM Mapper Module - HARDCODED VERSION
+No external schema file needed - transformation is built-in
 """
 
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    import pytz
+    ZoneInfo = lambda x: pytz.timezone(x)
+    
 from typing import Dict, List, Tuple, Optional
 import logging
 from pathlib import Path
@@ -15,65 +20,71 @@ logger = logging.getLogger(__name__)
 
 
 class ACMMapper:
-    """Maps processed trades to ACM ListedTrades format"""
+    """Maps processed trades to ACM ListedTrades format - HARDCODED VERSION"""
     
     def __init__(self, schema_file: str = None):
         """
-        Initialize ACM Mapper
+        Initialize ACM Mapper with hardcoded schema
         
         Args:
-            schema_file: Path to Excel schema file
+            schema_file: Optional - not needed with hardcoded schema
         """
-        self.schema_file = schema_file
-        self.columns_order = []
-        self.mandatory_columns = set()
-        self.singapore_tz = ZoneInfo("Asia/Singapore")
+        # HARDCODED ACM SCHEMA
+        self.columns_order = [
+            "Trade Date",
+            "Settle Date", 
+            "Account Id",
+            "Counterparty Code",
+            "Identifier",
+            "Identifier Type",
+            "Quantity",
+            "Trade Price",
+            "Price",
+            "Instrument Type",
+            "Strike Price",
+            "Lot Size",
+            "Strategy",
+            "Executing Broker Name",
+            "Trade Venue",
+            "Notes",
+            "Transaction Type"
+        ]
         
-        if schema_file and Path(schema_file).exists():
-            self.load_schema(schema_file)
+        # HARDCODED MANDATORY FIELDS
+        self.mandatory_columns = {
+            "Account Id",
+            "Identifier",
+            "Quantity",
+            "Transaction Type"
+        }
+        
+        try:
+            self.singapore_tz = ZoneInfo("Asia/Singapore")
+        except:
+            import pytz
+            self.singapore_tz = pytz.timezone("Asia/Singapore")
+        
+        logger.info("Using hardcoded ACM schema - no external file needed")
     
     def load_schema(self, schema_file: str) -> bool:
         """
-        Load schema from Excel file
-        
-        Args:
-            schema_file: Path to Excel file with 'Columns' sheet
-            
-        Returns:
-            True if successful, False otherwise
+        Kept for compatibility but not needed with hardcoded schema
         """
-        try:
-            df = pd.read_excel(schema_file, sheet_name="Columns")
-            df.columns = [c.strip() for c in df.columns]
-            
-            # Get column order
-            self.columns_order = df["Column"].astype(str).tolist()
-            
-            # Get mandatory columns
-            mandatory_mask = df["Mandatory"].astype(str).str.strip().str.lower() == "yes"
-            self.mandatory_columns = set(df.loc[mandatory_mask, "Column"].astype(str).tolist())
-            
-            logger.info(f"Loaded schema with {len(self.columns_order)} columns, "
-                       f"{len(self.mandatory_columns)} mandatory")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error loading schema: {e}")
-            return False
+        logger.info("Schema already hardcoded - ignoring external file")
+        return True
     
     def map_transaction_type(self, bs: str, opposite: str) -> str:
         """
         Map B/S and Opposite? to Transaction Type
         
-        Args:
-            bs: Buy/Sell indicator
-            opposite: Yes/No for opposite strategy
-            
-        Returns:
-            Transaction type string
+        Based on these rules:
+        - Buy + Opposite=Yes → BuyToCover
+        - Buy + Opposite=No → Buy  
+        - Sell + Opposite=Yes → Sell
+        - Sell + Opposite=No → SellShort
         """
-        b = (bs or "").strip().lower()
-        o = (opposite or "").strip().lower()
+        b = str(bs).strip().lower() if pd.notna(bs) else ""
+        o = str(opposite).strip().lower() if pd.notna(opposite) else ""
         truthy = {"yes", "y", "true", "1"}
         
         if b.startswith("b"):
@@ -84,163 +95,139 @@ class ACMMapper:
     
     def process_mapping(self, input_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Process mapping from input to ACM format
+        Process mapping from Stage 1 output to ACM format
+        HARDCODED FIELD MAPPINGS - No configuration needed
         
-        Args:
-            input_df: Processed trades dataframe
-            
-        Returns:
-            Mapped dataframe in ACM format
+        Expected Stage 1 columns (from your trade processor):
+        - Column 0: Scheme (TM Code)
+        - Column 1: TM Name
+        - Column 2: A/E
+        - Column 3: Avg Price
+        - Column 4: Instr (OPTSTK/OPTIDX/FUTSTK/FUTIDX)
+        - Column 5: Symbol
+        - Column 6: Expiry Dt
+        - Column 7: Lot Size
+        - Column 8: Strike Price
+        - Column 9: Option Type
+        - Column 10: B/S
+        - Column 11: Qty
+        - Column 12: Lots Traded
+        - Column 13: CP Code
+        - Strategy: Added by Stage 1
+        - Opposite?: Added by Stage 1
+        - Bloomberg_Ticker: Added by Stage 1
         """
-        # Ensure schema is loaded
-        if not self.columns_order:
-            logger.error("Schema not loaded")
-            return pd.DataFrame()
         
-        # Strip column names in input
+        # Make a copy and handle both named and unnamed columns
         input_df = input_df.copy()
-        input_df.columns = [str(c).strip() for c in input_df.columns]
         
-        # Initialize output dataframe with schema columns
+        # Initialize output with all ACM columns
         n = len(input_df)
         out = pd.DataFrame({col: [""] * n for col in self.columns_order})
         
-        # Get current timestamps
+        # Get current timestamps for Singapore timezone
         now_sg = datetime.now(self.singapore_tz)
         trade_date_str = now_sg.strftime("%m/%d/%Y %H:%M:%S")
         settle_date_str = now_sg.strftime("%m/%d/%Y")
         
         # ==================
-        # FIELD MAPPINGS
+        # HARDCODED MAPPINGS
         # ==================
         
-        # Dates
-        if "Trade Date" in out.columns:
-            out["Trade Date"] = trade_date_str
-        if "Settle Date" in out.columns:
-            out["Settle Date"] = settle_date_str
+        # 1. DATES - Always use current Singapore time
+        out["Trade Date"] = trade_date_str
+        out["Settle Date"] = settle_date_str
         
-        # Account and Counterparty
-        if "Account Id" in out.columns and "Scheme" in input_df.columns:
+        # 2. ACCOUNT ID ← Scheme (Column 0)
+        if 0 in input_df.columns:
+            out["Account Id"] = input_df[0].astype(str)
+        elif "Scheme" in input_df.columns:
             out["Account Id"] = input_df["Scheme"].astype(str)
         
-        if "Counterparty Code" in out.columns and "CP Code" in input_df.columns:
+        # 3. COUNTERPARTY CODE ← CP Code (Column 13)
+        if 13 in input_df.columns:
+            out["Counterparty Code"] = input_df[13].astype(str)
+        elif "CP Code" in input_df.columns:
             out["Counterparty Code"] = input_df["CP Code"].astype(str)
         
-        # Identifier (from Bloomberg Ticker)
-        if "Identifier" in out.columns and "Bloomberg_Ticker" in input_df.columns:
+        # 4. IDENTIFIER ← Bloomberg_Ticker (added by Stage 1)
+        if "Bloomberg_Ticker" in input_df.columns:
             out["Identifier"] = input_df["Bloomberg_Ticker"].astype(str)
         
-        if "Identifier Type" in out.columns:
-            out["Identifier Type"] = "Bloomberg Yellow Key"
+        # 5. IDENTIFIER TYPE - Always Bloomberg
+        out["Identifier Type"] = "Bloomberg Yellow Key"
         
-        # Quantity (absolute value of Lots Traded)
-        if "Quantity" in out.columns:
-            # Try different column names for lots
-            lots_col = None
-            for col_name in ["Lots Traded", "Lots", 12]:  # Column 12 for unnamed
-                if col_name in input_df.columns:
-                    lots_col = col_name
-                    break
-            
-            if lots_col is not None:
-                out["Quantity"] = pd.to_numeric(input_df[lots_col], errors="coerce").abs()
+        # 6. QUANTITY ← Absolute value of Lots Traded (Column 12)
+        if 12 in input_df.columns:
+            out["Quantity"] = pd.to_numeric(input_df[12], errors="coerce").abs()
+        elif "Lots Traded" in input_df.columns:
+            out["Quantity"] = pd.to_numeric(input_df["Lots Traded"], errors="coerce").abs()
         
-        # Price fields
-        price_col = None
-        for col_name in ["Avg Price", "Price", 3]:  # Column 3 for unnamed
-            if col_name in input_df.columns:
-                price_col = col_name
-                break
+        # 7. TRADE PRICE & PRICE ← Avg Price (Column 3)
+        if 3 in input_df.columns:
+            price_val = pd.to_numeric(input_df[3], errors="coerce")
+            out["Trade Price"] = price_val
+            out["Price"] = price_val
+        elif "Avg Price" in input_df.columns:
+            price_val = pd.to_numeric(input_df["Avg Price"], errors="coerce")
+            out["Trade Price"] = price_val
+            out["Price"] = price_val
         
-        if price_col:
-            if "Trade Price" in out.columns:
-                out["Trade Price"] = pd.to_numeric(input_df[price_col], errors="coerce")
-            if "Price" in out.columns:
-                out["Price"] = pd.to_numeric(input_df[price_col], errors="coerce")
+        # 8. INSTRUMENT TYPE ← Instr (Column 4)
+        if 4 in input_df.columns:
+            out["Instrument Type"] = input_df[4].astype(str)
+        elif "Instr" in input_df.columns:
+            out["Instrument Type"] = input_df["Instr"].astype(str)
         
-        # Instrument Type
-        if "Instrument Type" in out.columns:
-            instr_col = None
-            for col_name in ["Instr", 4]:  # Column 4 for unnamed
-                if col_name in input_df.columns:
-                    instr_col = col_name
-                    break
-            if instr_col:
-                out["Instrument Type"] = input_df[instr_col].astype(str)
+        # 9. STRIKE PRICE ← Strike Price (Column 8)
+        if 8 in input_df.columns:
+            out["Strike Price"] = pd.to_numeric(input_df[8], errors="coerce")
+        elif "Strike Price" in input_df.columns:
+            out["Strike Price"] = pd.to_numeric(input_df["Strike Price"], errors="coerce")
         
-        # Strike Price
-        if "Strike Price" in out.columns:
-            strike_col = None
-            for col_name in ["Strike Price", 8]:  # Column 8 for unnamed
-                if col_name in input_df.columns:
-                    strike_col = col_name
-                    break
-            if strike_col:
-                out["Strike Price"] = pd.to_numeric(input_df[strike_col], errors="coerce")
+        # 10. LOT SIZE ← Lot Size (Column 7)
+        if 7 in input_df.columns:
+            out["Lot Size"] = pd.to_numeric(input_df[7], errors="coerce")
+        elif "Lot Size" in input_df.columns:
+            out["Lot Size"] = pd.to_numeric(input_df["Lot Size"], errors="coerce")
         
-        # Lot Size
-        if "Lot Size" in out.columns:
-            lot_size_col = None
-            for col_name in ["Lot Size", 7]:  # Column 7 for unnamed
-                if col_name in input_df.columns:
-                    lot_size_col = col_name
-                    break
-            if lot_size_col:
-                out["Lot Size"] = pd.to_numeric(input_df[lot_size_col], errors="coerce")
-        
-        # Strategy (from Stage 1 processing)
-        if "Strategy" in out.columns and "Strategy" in input_df.columns:
+        # 11. STRATEGY ← Strategy (added by Stage 1)
+        if "Strategy" in input_df.columns:
             out["Strategy"] = input_df["Strategy"].astype(str)
         
-        # Executing Broker
-        if "Executing Broker Name" in out.columns:
-            broker_col = None
-            for col_name in ["TM Name", 1]:  # Column 1 for unnamed
-                if col_name in input_df.columns:
-                    broker_col = col_name
-                    break
-            if broker_col:
-                out["Executing Broker Name"] = input_df[broker_col].astype(str)
+        # 12. EXECUTING BROKER NAME ← TM Name (Column 1)
+        if 1 in input_df.columns:
+            out["Executing Broker Name"] = input_df[1].astype(str)
+        elif "TM Name" in input_df.columns:
+            out["Executing Broker Name"] = input_df["TM Name"].astype(str)
         
-        # Trade Venue (blank)
-        if "Trade Venue" in out.columns:
-            out["Trade Venue"] = ""
+        # 13. TRADE VENUE - Always blank
+        out["Trade Venue"] = ""
         
-        # Notes
-        if "Notes" in out.columns:
-            notes_col = None
-            for col_name in ["A/E", 2]:  # Column 2 for unnamed
-                if col_name in input_df.columns:
-                    notes_col = col_name
-                    break
-            if notes_col:
-                out["Notes"] = input_df[notes_col].astype(str)
+        # 14. NOTES ← A/E (Column 2)
+        if 2 in input_df.columns:
+            out["Notes"] = input_df[2].astype(str)
+        elif "A/E" in input_df.columns:
+            out["Notes"] = input_df["A/E"].astype(str)
         
-        # Transaction Type (based on B/S and Opposite?)
-        if "Transaction Type" in out.columns:
-            bs_col = None
-            opposite_col = None
-            
-            # Find B/S column
-            for col_name in ["B/S", 10]:  # Column 10 for unnamed
-                if col_name in input_df.columns:
-                    bs_col = col_name
-                    break
-            
-            # Find Opposite? column
-            for col_name in ["Opposite?", "Opposite"]:
-                if col_name in input_df.columns:
-                    opposite_col = col_name
-                    break
-            
-            if bs_col and opposite_col:
+        # 15. TRANSACTION TYPE ← Based on B/S (Column 10) and Opposite?
+        bs_col = None
+        if 10 in input_df.columns:
+            bs_col = 10
+        elif "B/S" in input_df.columns:
+            bs_col = "B/S"
+        
+        opposite_col = "Opposite?" if "Opposite?" in input_df.columns else None
+        
+        if bs_col is not None:
+            if opposite_col:
+                # Use both B/S and Opposite flag
                 out["Transaction Type"] = [
                     self.map_transaction_type(bs, op)
                     for bs, op in zip(input_df[bs_col], input_df[opposite_col])
                 ]
-            elif bs_col:
-                # If no Opposite column, just use B/S
+            else:
+                # No Opposite column - assume all are normal (not opposite)
                 out["Transaction Type"] = [
                     self.map_transaction_type(bs, "No")
                     for bs in input_df[bs_col]
@@ -249,18 +236,22 @@ class ACMMapper:
         # Clean up NaN values
         out = out.fillna("")
         
-        logger.info(f"Mapped {len(out)} records to ACM format")
+        # Replace 'nan' strings with empty
+        for col in out.columns:
+            out[col] = out[col].replace('nan', '')
+        
+        logger.info(f"Mapped {len(out)} records to ACM format using hardcoded schema")
         return out
     
     def validate_output(self, output_df: pd.DataFrame) -> List[Dict]:
         """
-        Validate the output dataframe
+        Validate the output dataframe for mandatory fields
         
-        Args:
-            output_df: Mapped output dataframe
-            
-        Returns:
-            List of validation errors
+        Mandatory fields (hardcoded):
+        - Account Id
+        - Identifier
+        - Quantity  
+        - Transaction Type
         """
         errors = []
         
@@ -269,15 +260,15 @@ class ACMMapper:
                 errors.append({
                     "row": 0,
                     "column": col,
-                    "reason": "mandatory column missing in output structure"
+                    "reason": "mandatory column missing"
                 })
                 continue
             
             # Check for blank values
-            mask = output_df[col].astype(str).str.strip()
-            mask = (mask == "") | (mask.str.lower() == "nan")
+            col_values = output_df[col].astype(str).str.strip()
+            blank_mask = (col_values == "") | (col_values.str.lower() == "nan") | (col_values.str.lower() == "none")
             
-            for idx in output_df.index[mask]:
+            for idx in output_df.index[blank_mask]:
                 errors.append({
                     "row": int(idx) + 1,
                     "column": col,
@@ -290,6 +281,7 @@ class ACMMapper:
     def process_trades_to_acm(self, processed_trades_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Main method to process trades to ACM format
+        No schema file needed - all mappings are hardcoded
         
         Args:
             processed_trades_df: Output from Stage 1 (trade processor)
@@ -297,6 +289,8 @@ class ACMMapper:
         Returns:
             Tuple of (mapped_df, errors_df)
         """
+        logger.info("Processing trades to ACM format with hardcoded mappings")
+        
         # Map the data
         mapped_df = self.process_mapping(processed_trades_df)
         
