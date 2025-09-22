@@ -1,7 +1,6 @@
 """
-Position Manager Module - WITH YAHOO PRICE FETCHING
-Fetches underlying security prices based on Symbol column for ITM/OTM analysis
-Shows N/A when price cannot be fetched
+Position Manager Module - WITH YAHOO PRICE FETCHING AND DATE FORMATTING
+Ensures all expiry dates are formatted as simple dates (YYYY-MM-DD)
 """
 
 from dataclasses import dataclass, field
@@ -154,6 +153,10 @@ class PositionDetails:
         self.qty = self.lots * self.lot_size
         self.direction = "Long" if self.lots > 0 else "Short" if self.lots < 0 else "Flat"
     
+    def get_expiry_date_str(self) -> str:
+        """Get expiry as date string (YYYY-MM-DD)"""
+        return self.expiry.strftime('%Y-%m-%d')
+    
     def __repr__(self):
         return f"Position({self.ticker}, {self.lots} lots @ {self.lot_size}, {self.strategy})"
 
@@ -171,7 +174,7 @@ class PositionManager:
     def initialize_from_positions(self, initial_positions: List) -> pd.DataFrame:
         """
         Initialize position manager with existing positions
-        Returns DataFrame with Yahoo prices
+        Returns DataFrame with Yahoo prices and formatted dates
         """
         self.positions.clear()
         self.ticker_details_map.clear()
@@ -215,12 +218,15 @@ class PositionManager:
                 'underlying': pos.underlying_ticker
             }
             
-            # Add to DataFrame data
+            # Format expiry as simple date string
+            expiry_date_str = pos.expiry_date.strftime('%Y-%m-%d')
+            
+            # Add to DataFrame data with formatted date
             positions_data.append({
                 'Ticker': pos.bloomberg_ticker,
                 'Symbol': pos.symbol,
                 'Security_Type': pos.security_type,
-                'Expiry': pos.expiry_date,
+                'Expiry': expiry_date_str,  # Simple date format
                 'Strike': pos.strike_price if pos.security_type != 'Futures' else 0,
                 'Lots': pos.position_lots,
                 'Lot_Size': pos.lot_size,
@@ -318,7 +324,7 @@ class PositionManager:
                (position.lots < 0 and trade_quantity > 0)
     
     def get_final_positions(self) -> pd.DataFrame:
-        """Get final positions with Yahoo prices"""
+        """Get final positions with Yahoo prices and formatted dates"""
         if not self.positions:
             # Return empty DataFrame with correct structure
             return pd.DataFrame(columns=[
@@ -330,11 +336,14 @@ class PositionManager:
         positions_data = []
         
         for ticker, position in self.positions.items():
+            # Format expiry as simple date string
+            expiry_date_str = position.expiry.strftime('%Y-%m-%d')
+            
             positions_data.append({
                 'Ticker': ticker,
                 'Symbol': position.symbol,
                 'Security_Type': position.security_type,
-                'Expiry': position.expiry,
+                'Expiry': expiry_date_str,  # Simple date format
                 'Strike': position.strike,
                 'Lots': position.lots,
                 'Lot_Size': position.lot_size,
