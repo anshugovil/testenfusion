@@ -63,6 +63,12 @@ class ExpiryDeliveryGenerator:
         results = {}
         
         for expiry_date, group_df in expiry_groups:
+            # Convert to datetime if it's a date
+            if hasattr(expiry_date, 'strftime'):
+                expiry_datetime = datetime.combine(expiry_date, datetime.min.time())
+            else:
+                expiry_datetime = expiry_date
+                
             logger.info(f"Processing {len(group_df)} positions for expiry {expiry_date}")
             
             # Process this expiry group
@@ -70,7 +76,7 @@ class ExpiryDeliveryGenerator:
                 group_df, prices, expiry_date
             )
             
-            results[expiry_date] = {
+            results[expiry_datetime] = {
                 'position_type': position_type,
                 'expiry_date': expiry_date,
                 'derivatives': derivatives,
@@ -170,7 +176,7 @@ class ExpiryDeliveryGenerator:
         if pd.isna(ticker):
             return False
         ticker_upper = str(ticker).upper()
-        return 'INDEX' in ticker_upper or any(idx in ticker_upper for idx in ['NIFTY', 'NZ', 'AF1', 'NSEBANK'])
+        return 'INDEX' in ticker_upper or any(idx in ticker_upper for idx in ['NIFTY', 'NZ', 'AF1', 'NSEBANK', 'RNS', 'NMIDSELP'])
     
     def _process_futures(self, row: pd.Series, last_price: float) -> Tuple[Dict, Optional[Dict]]:
         """Process futures position at expiry"""
@@ -432,7 +438,7 @@ class ExpiryDeliveryGenerator:
                 'TradeNotes': ''
             })
             
-            # Add blank separator row
+            # Add blank separator row (except for last underlying)
             if underlying != cash_df['Underlying'].unique()[-1]:
                 summary_rows.append({col: '' for col in 
                     ['Underlying', 'Type', 'Buy/Sell', 'Quantity', 'Price', 
@@ -462,7 +468,7 @@ class ExpiryDeliveryGenerator:
     def generate_expiry_reports(self,
                               pre_trade_results: Dict,
                               post_trade_results: Dict,
-                              output_dir: str) -> Dict[str, str]:
+                              output_dir: str) -> Dict[datetime, str]:
         """
         Generate comprehensive Excel reports for each expiry
         
@@ -552,7 +558,13 @@ class ExpiryDeliveryGenerator:
             
             # Save workbook if sheets were added
             if sheet_added:
-                file_name = f"EXPIRY_DELIVERY_{expiry_date.strftime('%Y%m%d')}.xlsx"
+                # Format date properly for filename
+                if hasattr(expiry_date, 'strftime'):
+                    date_str = expiry_date.strftime('%Y%m%d')
+                else:
+                    date_str = str(expiry_date).replace('-', '').replace(' ', '_')[:8]
+                    
+                file_name = f"EXPIRY_DELIVERY_{date_str}.xlsx"
                 file_path = output_path / file_name
                 wb.save(file_path)
                 output_files[expiry_date] = str(file_path)
