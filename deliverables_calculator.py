@@ -376,9 +376,146 @@ class DeliverableCalculator:
         if not expiry_positions:
             return
         
-        # Same structure as master sheet but filtered by expiry
-        # (Implementation follows same pattern as _write_master_sheet)
-        # ... [Similar implementation to _write_master_sheet but with filtered positions]
+        # Headers matching the master sheet
+        headers = [
+            "Underlying", "Symbol", "Expiry", "Position", "Type", "Strike",
+            "System Deliverable", "Override Deliverable", "System Price",
+            "Override Price", "BBG Price", "BBG Deliverable",
+            "", "System Price -%", "System Deliv -%", "System Price +%", "System Deliv +%",
+            "BBG Price -%", "BBG Deliv -%", "BBG Price +%", "BBG Deliv +%"
+        ]
+        
+        # Add sensitivity percentage input in M1
+        ws.cell(row=1, column=13, value=10)  # Default 10% sensitivity
+        ws.cell(row=1, column=13).fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        
+        # Write headers
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=2, column=col, value=header)
+            if col != 13:  # Skip the separator column
+                cell.font = self.header_font
+                cell.fill = self.header_fill
+                cell.alignment = self.header_alignment
+            cell.border = self.border
+        
+        # Group positions by underlying
+        grouped = self._group_by_underlying(expiry_positions)
+        
+        current_row = 3
+        
+        for underlying in sorted(grouped.keys()):
+            underlying_positions = grouped[underlying]
+            group_start_row = current_row
+            
+            # Write group header
+            cell = ws.cell(row=current_row, column=1, value=underlying)
+            cell.font = self.group_font
+            
+            # Apply group formatting
+            for col in range(1, 22):
+                cell = ws.cell(row=current_row, column=col)
+                cell.fill = self.group_fill
+                cell.border = self.border
+            
+            # Get spot price from Yahoo (try different keys)
+            spot_price = None
+            if prices:
+                # Try underlying first
+                spot_price = prices.get(underlying)
+                # If not found, try the symbol from first position
+                if not spot_price and underlying_positions:
+                    first_symbol = underlying_positions[0].get('symbol', '')
+                    spot_price = prices.get(first_symbol)
+                # If still not found, check if underlying has a space and try first part
+                if not spot_price and ' ' in underlying:
+                    base_ticker = underlying.split(' ')[0]
+                    spot_price = prices.get(base_ticker)
+            
+            # System price in group header (Yahoo price)
+            if spot_price:
+                ws.cell(row=current_row, column=9, value=spot_price).number_format = self.price_format
+            else:
+                ws.cell(row=current_row, column=9, value="").number_format = self.price_format
+            
+            # Override price (blank for user input)
+            ws.cell(row=current_row, column=10, value="").number_format = self.price_format
+            
+            # Bloomberg price formula
+            bbg_formula = f'=BDP(A{current_row},"PX_LAST")'
+            ws.cell(row=current_row, column=11, value=bbg_formula).number_format = self.price_format
+            
+            # Sensitivity price formulas for group header
+            ws.cell(row=current_row, column=14, 
+                value=f"=IF($M$1<>\"\",I{current_row}*(1-$M$1/100),\"\")").number_format = self.price_format
+            ws.cell(row=current_row, column=16,
+                value=f"=IF($M$1<>\"\",I{current_row}*(1+$M$1/100),\"\")").number_format = self.price_format
+            ws.cell(row=current_row, column=18,
+                value=f"=IF($M$1<>\"\",K{current_row}*(1-$M$1/100),\"\")").number_format = self.price_format
+            ws.cell(row=current_row, column=20,
+                value=f"=IF($M$1<>\"\",K{current_row}*(1+$M$1/100),\"\")").number_format = self.price_format
+            
+            detail_rows = []
+            current_row += 1
+            
+            # Write detail rows
+            for pos in sorted(underlying_positions, key=lambda x: (x['expiry'], x['strike'])):
+                ws.cell(row=current_row, column=2, value=pos['ticker'])
+                ws.cell(row=current_row, column=3, value=pos['expiry'].strftime('%Y-%m-%d'))
+                ws.cell(row=current_row, column=4, value=pos['lots'])
+                ws.cell(row=current_row, column=5, value=pos['security_type'])
+                
+                if pos['strike'] > 0:
+                    ws.cell(row=current_row, column=6, value=pos['strike']).number_format = self.price_format
+                
+                # Deliverable formulas
+                for col_idx, price_col in [(7, "I"), (8, "J"), (12, "K")]:
+                    formula = self._create_deliverable_formula(
+                        current_row, group_start_row, pos['security_type'], 
+                        pos['strike'], pos['lots'], price_col
+                    )
+                    ws.cell(row=current_row, column=col_idx, value=formula).number_format = self.deliv_format
+                
+                # Sensitivity deliverable formulas
+                for col_idx, price_col in [(15, "N"), (17, "P"), (19, "R"), (21, "T")]:
+                    base_formula = self._create_deliverable_formula(
+                        current_row, group_start_row, pos['security_type'],
+                        pos['strike'], pos['lots'], price_col
+                    )
+                    cell = ws.cell(row=current_row, column=col_idx, 
+                        value=f"=IF($M$1<>\"\",{base_formula[1:]},\"\")")
+                    cell.number_format = self.deliv_format
+                
+                # Apply borders
+                for col in range(1, 22):
+                    ws.cell(row=current_row, column=col).border = self.border
+                
+                detail_rows.append(current_row)
+                current_row += 1
+            
+            # Add totals to group header
+            if detail_rows:
+                for col_idx in [7, 8, 12]:
+                    col_letter = chr(64 + col_idx)
+                    cell = ws.cell(row=group_start_row, column=col_idx,
+                        value=f"=SUM({col_letter}{detail_rows[0]}:{col_letter}{detail_rows[-1]})")
+                    cell.number_format = self.deliv_format
+                
+                for col_idx, col_letter in [(15, "O"), (17, "Q"), (19, "S"), (21, "U")]:
+                    cell = ws.cell(row=group_start_row, column=col_idx,
+                        value=f"=IF($M$1<>\"\",SUM({col_letter}{detail_rows[0]}:{col_letter}{detail_rows[-1]}),\"\")")
+                    cell.number_format = self.deliv_format
+            
+            # Apply grouping (collapsible rows)
+            for row_num in detail_rows:
+                ws.row_dimensions[row_num].outline_level = 1
+                ws.row_dimensions[row_num].hidden = False
+        
+        # Set column widths
+        self._set_master_column_widths(ws)
+        
+        # Configure outline settings
+        ws.sheet_properties.outlinePr.summaryBelow = False
+        ws.sheet_properties.outlinePr.summaryRight = False
     
     def _write_iv_master_sheet(self, positions: List[Dict], prices: Dict[str, float], prefix: str):
         """Write IV sheet with all expiries"""
