@@ -1,6 +1,6 @@
 """
-Enhanced Unified Trade Processing Pipeline - COMPLETE VERSION
-Includes ALL original features PLUS Deliverables, IV calculations, and PMS Reconciliation
+Enhanced Unified Trade Processing Pipeline - COMPLETE VERSION WITH EXPIRY DELIVERIES
+Includes ALL features: Strategy Processing, ACM Mapping, Deliverables, PMS Recon, and Expiry Physical Delivery
 """
 
 import streamlit as st
@@ -22,13 +22,20 @@ try:
     from output_generator import OutputGenerator
     from acm_mapper import ACMMapper
     
-    # Import NEW modules (only if they exist)
+    # Import enhanced modules
     try:
         from deliverables_calculator import DeliverableCalculator
         from enhanced_recon_module import EnhancedReconciliation
         NEW_FEATURES_AVAILABLE = True
     except ImportError:
         NEW_FEATURES_AVAILABLE = False
+    
+    # Import Expiry Delivery Generator
+    try:
+        from expiry_delivery_generator import ExpiryDeliveryGenerator
+        EXPIRY_DELIVERY_AVAILABLE = True
+    except ImportError:
+        EXPIRY_DELIVERY_AVAILABLE = False
         
 except ModuleNotFoundError as e:
     st.error(f"Failed to import modules: {e}")
@@ -41,13 +48,13 @@ logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
-    page_title="Trade Processing Pipeline - Enhanced",
+    page_title="Trade Processing Pipeline - Complete Edition",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS (keep all original CSS)
+# Custom CSS
 st.markdown("""
     <style>
     .main { padding: 0rem 1rem; }
@@ -85,12 +92,19 @@ st.markdown("""
         padding: 10px;
         margin: 10px 0;
     }
+    .expiry-card {
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 15px;
+        margin: 10px 0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 def ensure_directories():
     """Ensure required directories exist"""
-    dirs = ["output", "output/stage1", "output/stage2", "temp"]
+    dirs = ["output", "output/stage1", "output/stage2", "output/expiry_deliveries", "temp"]
     for dir_path in dirs:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
 
@@ -106,10 +120,10 @@ def get_temp_dir():
         return temp_dir
 
 def main():
-    st.title("🎯 Enhanced Trade Processing Pipeline")
-    st.markdown("### Complete pipeline with all features")
+    st.title("🎯 Enhanced Trade Processing Pipeline - Complete Edition")
+    st.markdown("### Comprehensive pipeline with strategy processing, deliverables, reconciliation, and expiry physical delivery")
     
-    # Initialize session state (ALL original states PLUS new ones)
+    # Initialize session state
     if 'stage1_complete' not in st.session_state:
         st.session_state.stage1_complete = False
     if 'stage2_complete' not in st.session_state:
@@ -122,7 +136,6 @@ def main():
         st.session_state.dataframes = {}
     if 'acm_mapper' not in st.session_state:
         st.session_state.acm_mapper = None
-    # NEW session states
     if 'deliverables_complete' not in st.session_state:
         st.session_state.deliverables_complete = False
     if 'recon_complete' not in st.session_state:
@@ -131,12 +144,16 @@ def main():
         st.session_state.deliverables_data = {}
     if 'recon_data' not in st.session_state:
         st.session_state.recon_data = {}
+    if 'expiry_deliveries_complete' not in st.session_state:
+        st.session_state.expiry_deliveries_complete = False
+    if 'expiry_delivery_files' not in st.session_state:
+        st.session_state.expiry_delivery_files = {}
     
-    # Sidebar with ALL ORIGINAL FEATURES PLUS NEW ONES
+    # Sidebar
     with st.sidebar:
         st.header("📂 Input Files")
         
-        # ============ ORIGINAL STAGE 1 SECTION ============
+        # Stage 1 Section
         st.markdown("### Stage 1: Strategy Processing")
         
         position_file = st.file_uploader(
@@ -186,7 +203,7 @@ def main():
                 )
             else:
                 mapping_file = None
-                st.success(f"✓ Using {Path(default_mapping).name}")
+                st.success(f"✔ Using {Path(default_mapping).name}")
         else:
             st.warning("Upload mapping file (required)")
             mapping_file = st.file_uploader(
@@ -199,7 +216,7 @@ def main():
         
         st.divider()
         
-        # ============ ORIGINAL STAGE 2 SECTION ============
+        # Stage 2 Section
         st.markdown("### Stage 2: ACM Mapping")
         
         schema_option = st.radio(
@@ -226,84 +243,91 @@ def main():
                 help="Download the default schema as Excel for reference or customization",
                 use_container_width=True
             )
-            
-            st.markdown("""
-            <div class='info-box'>
-            <small>
-            ℹ️ This template shows the default ACM format. 
-            You can download it to understand the structure or 
-            customize it for your needs.
-            </small>
-            </div>
-            """, unsafe_allow_html=True)
-            
         else:
             st.warning("📤 Upload your custom schema file")
             custom_schema_file = st.file_uploader(
                 "Upload ACM Schema",
                 type=['xlsx', 'xls'],
-                key='custom_schema_file',
-                help="Excel file with 'Columns' sheet defining the ACM format"
+                key='custom_schema_file'
             )
-            
-            if custom_schema_file:
-                st.success(f"✓ Will use custom schema: {custom_schema_file.name}")
         
         st.divider()
         
-        # ============ NEW ENHANCED FEATURES SECTION ============
-        if NEW_FEATURES_AVAILABLE:
-            st.markdown("### 📊 Additional Features")
-            
-            # Deliverables/IV option
-            enable_deliverables = st.checkbox(
-                "Enable Deliverables/IV Calculation",
+        # Additional Features Section
+        st.markdown("### 📊 Additional Features")
+        
+        # Deliverables/IV option
+        enable_deliverables = st.checkbox(
+            "Enable Deliverables/IV Calculation",
+            value=False,
+            key="enable_deliverables",
+            help="Calculate physical delivery obligations and intrinsic values"
+        )
+        
+        if enable_deliverables:
+            col1, col2 = st.columns(2)
+            with col1:
+                usdinr_rate = st.number_input(
+                    "USD/INR Rate",
+                    min_value=50.0,
+                    max_value=150.0,
+                    value=88.0,
+                    step=0.1,
+                    key="usdinr_rate"
+                )
+            with col2:
+                fetch_prices = st.checkbox(
+                    "Fetch Yahoo Prices",
+                    value=True,
+                    key="fetch_prices",
+                    help="Fetch current prices from Yahoo Finance"
+                )
+        
+        # Expiry Delivery Generation
+        if EXPIRY_DELIVERY_AVAILABLE:
+            enable_expiry_delivery = st.checkbox(
+                "Enable Expiry Physical Delivery",
                 value=False,
-                key="enable_deliverables",
-                help="Calculate physical delivery obligations and intrinsic values"
+                key="enable_expiry_delivery",
+                help="Generate physical delivery trades per expiry date"
             )
             
-            if enable_deliverables:
+            if enable_expiry_delivery:
                 col1, col2 = st.columns(2)
                 with col1:
-                    usdinr_rate = st.number_input(
-                        "USD/INR Rate",
-                        min_value=50.0,
-                        max_value=150.0,
-                        value=88.0,
-                        step=0.1,
-                        key="usdinr_rate"
+                    use_yahoo_for_delivery = st.checkbox(
+                        "Use Yahoo Prices",
+                        value=True,
+                        key="use_yahoo_for_delivery",
+                        help="Use Yahoo prices for ITM calculations"
                     )
                 with col2:
-                    fetch_prices = st.checkbox(
-                        "Fetch Yahoo Prices",
+                    include_taxes = st.checkbox(
+                        "Calculate Taxes",
                         value=True,
-                        key="fetch_prices",
-                        help="Fetch current prices from Yahoo Finance"
+                        key="include_delivery_taxes",
+                        help="Include STT and stamp duty"
                     )
-            
-            # PMS Reconciliation option
-            enable_recon = st.checkbox(
-                "Enable PMS Reconciliation",
-                value=False,
-                key="enable_recon",
-                help="Compare positions with PMS file"
-            )
-            
-            pms_file = None
-            if enable_recon:
-                pms_file = st.file_uploader(
-                    "Upload PMS Position File",
-                    type=['xlsx', 'xls', 'csv'],
-                    key='pms_file',
-                    help="File with Symbol and Position columns from your PMS"
-                )
-                if pms_file:
-                    st.success(f"✓ PMS file loaded: {pms_file.name}")
-            
-            st.divider()
         
-        # ============ PROCESS BUTTONS ============
+        # PMS Reconciliation option
+        enable_recon = st.checkbox(
+            "Enable PMS Reconciliation",
+            value=False,
+            key="enable_recon",
+            help="Compare positions with PMS file"
+        )
+        
+        pms_file = None
+        if enable_recon:
+            pms_file = st.file_uploader(
+                "Upload PMS Position File",
+                type=['xlsx', 'xls', 'csv'],
+                key='pms_file'
+            )
+        
+        st.divider()
+        
+        # Process buttons
         can_process_stage1 = (
             position_file is not None and 
             trade_file is not None and 
@@ -325,26 +349,23 @@ def main():
         # Complete pipeline button
         if can_process_stage1:
             st.divider()
-            if NEW_FEATURES_AVAILABLE and (enable_deliverables or enable_recon):
-                if st.button("⚡ Run Complete Enhanced Pipeline", type="primary", use_container_width=True):
-                    # Run Stage 1
-                    if process_stage1(position_file, trade_file, mapping_file, use_default_mapping, default_mapping):
-                        # Run Stage 2
-                        process_stage2(schema_option, custom_schema_file)
-                        # Run enhanced features
-                        if enable_deliverables:
-                            run_deliverables_calculation(
-                                usdinr_rate if enable_deliverables else 88.0,
-                                fetch_prices if enable_deliverables else False
-                            )
-                        if enable_recon and pms_file:
-                            run_pms_reconciliation(pms_file)
-                        st.success("✅ Complete enhanced pipeline finished!")
-                        st.balloons()
-            else:
-                if st.button("⚡ Run Complete Pipeline", type="primary", use_container_width=True):
-                    if process_stage1(position_file, trade_file, mapping_file, use_default_mapping, default_mapping):
-                        process_stage2(schema_option, custom_schema_file)
+            if st.button("⚡ Run Complete Enhanced Pipeline", type="primary", use_container_width=True):
+                # Run Stage 1
+                if process_stage1(position_file, trade_file, mapping_file, use_default_mapping, default_mapping):
+                    # Run Stage 2
+                    process_stage2(schema_option, custom_schema_file)
+                    # Run enhanced features
+                    if enable_deliverables:
+                        run_deliverables_calculation(
+                            usdinr_rate if enable_deliverables else 88.0,
+                            fetch_prices if enable_deliverables else False
+                        )
+                    if EXPIRY_DELIVERY_AVAILABLE and enable_expiry_delivery:
+                        run_expiry_delivery_generation()
+                    if enable_recon and pms_file:
+                        run_pms_reconciliation(pms_file)
+                    st.success("✅ Complete enhanced pipeline finished!")
+                    st.balloons()
         
         st.divider()
         if st.button("🔄 Reset All", type="secondary", use_container_width=True):
@@ -352,7 +373,7 @@ def main():
                 del st.session_state[key]
             st.rerun()
     
-    # ============ MAIN CONTENT TABS ============
+    # Main content tabs
     tab_list = ["📊 Pipeline Overview", "📄 Stage 1: Strategy", "📋 Stage 2: ACM"]
     
     if NEW_FEATURES_AVAILABLE:
@@ -360,6 +381,9 @@ def main():
             tab_list.append("💰 Deliverables & IV")
         if st.session_state.get('enable_recon', False):
             tab_list.append("🔄 PMS Reconciliation")
+    
+    if EXPIRY_DELIVERY_AVAILABLE and st.session_state.get('enable_expiry_delivery', False):
+        tab_list.append("📅 Expiry Deliveries")
     
     tab_list.extend(["📥 Downloads", "📘 Schema Info"])
     
@@ -390,6 +414,12 @@ def main():
             display_reconciliation_tab()
         tab_index += 1
     
+    # Expiry Deliveries tab (if enabled)
+    if EXPIRY_DELIVERY_AVAILABLE and st.session_state.get('enable_expiry_delivery', False):
+        with tabs[tab_index]:
+            display_expiry_deliveries_tab()
+        tab_index += 1
+    
     with tabs[tab_index]:
         display_downloads()
     tab_index += 1
@@ -397,7 +427,7 @@ def main():
     with tabs[tab_index]:
         display_schema_info()
 
-# ============ ALL ORIGINAL FUNCTIONS (unchanged) ============
+# Processing Functions
 
 def process_stage1(position_file, trade_file, mapping_file, use_default, default_path):
     """Process Stage 1: Strategy Assignment"""
@@ -509,7 +539,7 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
         return False
 
 def process_stage2(schema_option, custom_schema_file):
-    """Process Stage 2: ACM Mapping with optional custom schema"""
+    """Process Stage 2: ACM Mapping"""
     try:
         with st.spinner("Processing Stage 2: ACM Mapping..."):
             if 'processed_trades_for_acm' not in st.session_state:
@@ -518,18 +548,15 @@ def process_stage2(schema_option, custom_schema_file):
             
             processed_trades_df = st.session_state.processed_trades_for_acm
             
-            # Initialize ACM Mapper based on schema option
+            # Initialize ACM Mapper
             if schema_option == "Use built-in schema (default)":
-                # Use hardcoded schema
                 acm_mapper = ACMMapper()
                 st.info("Using built-in ACM schema")
             else:
-                # Use custom schema
                 if not custom_schema_file:
                     st.error("❌ Please upload a custom schema file")
                     return False
                 
-                # Save custom schema to temp file
                 temp_dir = get_temp_dir()
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx', dir=temp_dir) as tmp:
                     tmp.write(custom_schema_file.getbuffer())
@@ -538,7 +565,6 @@ def process_stage2(schema_option, custom_schema_file):
                 acm_mapper = ACMMapper(schema_path)
                 st.info(f"Using custom schema: {custom_schema_file.name}")
             
-            # Store mapper for schema info display
             st.session_state.acm_mapper = acm_mapper
             
             # Process to ACM format
@@ -556,7 +582,6 @@ def process_stage2(schema_option, custom_schema_file):
             errors_file = output_dir / f"acm_listedtrades_{timestamp}_errors.csv"
             errors_df.to_csv(errors_file, index=False)
             
-            # Also save the schema used
             schema_file = output_dir / f"acm_schema_used_{timestamp}.xlsx"
             schema_bytes = acm_mapper.generate_schema_excel()
             with open(schema_file, 'wb') as f:
@@ -585,8 +610,6 @@ def process_stage2(schema_option, custom_schema_file):
                 st.success("✅ Stage 2 Complete! No validation errors.")
             else:
                 st.warning(f"⚠️ Stage 2 Complete with {len(errors_df)} validation errors.")
-                with st.expander("View Errors"):
-                    st.dataframe(errors_df, use_container_width=True)
             
             return True
             
@@ -594,6 +617,193 @@ def process_stage2(schema_option, custom_schema_file):
         st.error(f"❌ Error in Stage 2: {str(e)}")
         st.code(traceback.format_exc())
         return False
+
+def run_deliverables_calculation(usdinr_rate: float, fetch_prices: bool):
+    """Run deliverables and IV calculations"""
+    if not NEW_FEATURES_AVAILABLE:
+        st.error("Deliverables module not available")
+        return
+        
+    try:
+        if 'dataframes' not in st.session_state or 'stage1' not in st.session_state.dataframes:
+            st.error("Please complete Stage 1 first")
+            return
+        
+        with st.spinner("Calculating deliverables and intrinsic values..."):
+            stage1_data = st.session_state.dataframes['stage1']
+            starting_positions = stage1_data.get('starting_positions', pd.DataFrame())
+            final_positions = stage1_data.get('final_positions', pd.DataFrame())
+            
+            prices = {}
+            if fetch_prices:
+                try:
+                    from position_manager import PriceFetcher
+                    fetcher = PriceFetcher()
+                    
+                    all_symbols = set()
+                    if not starting_positions.empty and 'Symbol' in starting_positions.columns:
+                        all_symbols.update(starting_positions['Symbol'].unique())
+                    if not final_positions.empty and 'Symbol' in final_positions.columns:
+                        all_symbols.update(final_positions['Symbol'].unique())
+                    
+                    if all_symbols:
+                        for symbol in all_symbols:
+                            price = fetcher.fetch_price_for_symbol(symbol)
+                            if price:
+                                prices[symbol] = price
+                except:
+                    st.warning("Could not fetch Yahoo prices")
+            
+            calc = DeliverableCalculator(usdinr_rate)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = f"output/DELIVERABLES_REPORT_{timestamp}.xlsx"
+            
+            calc.generate_deliverables_report(
+                starting_positions,
+                final_positions,
+                prices,
+                output_file,
+                report_type="TRADE_PROCESSING"
+            )
+            
+            st.session_state.deliverables_file = output_file
+            st.session_state.deliverables_complete = True
+            
+            pre_deliv = calc.calculate_deliverables_from_dataframe(starting_positions, prices)
+            post_deliv = calc.calculate_deliverables_from_dataframe(final_positions, prices)
+            
+            st.session_state.deliverables_data = {
+                'pre_trade': pre_deliv,
+                'post_trade': post_deliv,
+                'prices': prices
+            }
+            
+            st.success(f"✅ Deliverables calculated and saved!")
+            
+    except Exception as e:
+        st.error(f"❌ Error calculating deliverables: {str(e)}")
+        logger.error(traceback.format_exc())
+
+def run_expiry_delivery_generation():
+    """Generate physical delivery outputs per expiry date"""
+    if not EXPIRY_DELIVERY_AVAILABLE:
+        st.error("Expiry Delivery Generator module not available")
+        return
+    
+    try:
+        if 'dataframes' not in st.session_state or 'stage1' not in st.session_state.dataframes:
+            st.error("Please complete Stage 1 first")
+            return
+        
+        with st.spinner("Generating expiry delivery reports..."):
+            # Get positions from Stage 1
+            stage1_data = st.session_state.dataframes['stage1']
+            starting_positions = stage1_data.get('starting_positions', pd.DataFrame())
+            final_positions = stage1_data.get('final_positions', pd.DataFrame())
+            
+            # Get prices if available
+            prices = {}
+            if st.session_state.get('use_yahoo_for_delivery', True):
+                # Extract prices from dataframes if they have Yahoo_Price column
+                for df in [starting_positions, final_positions]:
+                    if not df.empty and 'Symbol' in df.columns:
+                        for idx, row in df.iterrows():
+                            if 'Yahoo_Price' in df.columns and pd.notna(row['Yahoo_Price']) and row['Yahoo_Price'] != 'N/A':
+                                try:
+                                    prices[row['Symbol']] = float(row['Yahoo_Price'])
+                                except:
+                                    pass
+            
+            # Initialize generator
+            generator = ExpiryDeliveryGenerator(usdinr_rate=88.0)
+            
+            # Process positions by expiry
+            pre_trade_results = generator.process_positions_by_expiry(
+                starting_positions, prices, "Pre-Trade"
+            )
+            
+            post_trade_results = generator.process_positions_by_expiry(
+                final_positions, prices, "Post-Trade"
+            )
+            
+            # Generate reports
+            output_dir = "output/expiry_deliveries"
+            output_files = generator.generate_expiry_reports(
+                pre_trade_results, post_trade_results, output_dir
+            )
+            
+            # Store in session state
+            st.session_state.expiry_delivery_files = output_files
+            st.session_state.expiry_delivery_results = {
+                'pre_trade': pre_trade_results,
+                'post_trade': post_trade_results
+            }
+            st.session_state.expiry_deliveries_complete = True
+            
+            st.success(f"✅ Generated {len(output_files)} expiry delivery reports!")
+            
+    except Exception as e:
+        st.error(f"❌ Error generating expiry deliveries: {str(e)}")
+        logger.error(traceback.format_exc())
+
+def run_pms_reconciliation(pms_file):
+    """Run PMS reconciliation"""
+    if not NEW_FEATURES_AVAILABLE:
+        st.error("Reconciliation module not available")
+        return
+        
+    try:
+        if 'dataframes' not in st.session_state or 'stage1' not in st.session_state.dataframes:
+            st.error("Please complete Stage 1 first")
+            return
+        
+        with st.spinner("Running PMS reconciliation..."):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(pms_file.name).suffix) as tmp:
+                tmp.write(pms_file.getbuffer())
+                pms_path = tmp.name
+            
+            stage1_data = st.session_state.dataframes['stage1']
+            starting_positions = stage1_data.get('starting_positions', pd.DataFrame())
+            final_positions = stage1_data.get('final_positions', pd.DataFrame())
+            
+            recon = EnhancedReconciliation()
+            pms_df = recon.read_pms_file(pms_path)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = f"output/PMS_RECONCILIATION_{timestamp}.xlsx"
+            
+            recon.create_comprehensive_recon_report(
+                starting_positions,
+                final_positions,
+                pms_df,
+                output_file
+            )
+            
+            st.session_state.recon_file = output_file
+            st.session_state.recon_complete = True
+            
+            pre_recon = recon.reconcile_positions(starting_positions, pms_df, "Pre-Trade")
+            post_recon = recon.reconcile_positions(final_positions, pms_df, "Post-Trade")
+            
+            st.session_state.recon_data = {
+                'pre_trade': pre_recon,
+                'post_trade': post_recon,
+                'pms_df': pms_df
+            }
+            
+            st.success(f"✅ Reconciliation complete!")
+            
+            try:
+                os.unlink(pms_path)
+            except:
+                pass
+                
+    except Exception as e:
+        st.error(f"❌ Error in reconciliation: {str(e)}")
+        logger.error(traceback.format_exc())
+
+# Display Functions
 
 def display_pipeline_overview():
     """Display pipeline overview"""
@@ -632,7 +842,7 @@ def display_pipeline_overview():
         st.info("""
         **Input:**
         - Processed trades from Stage 1
-        - ACM schema (built-in or custom)
+        - ACM schema
         
         **Processing:**
         - Field mapping
@@ -646,6 +856,41 @@ def display_pipeline_overview():
         
         if st.session_state.stage2_complete:
             st.success("✅ Stage 2 Complete")
+    
+    # Additional features overview
+    if any([st.session_state.get('enable_deliverables'), 
+            st.session_state.get('enable_expiry_delivery'),
+            st.session_state.get('enable_recon')]):
+        st.markdown("### Enhanced Features Enabled")
+        
+        cols = st.columns(3)
+        feature_idx = 0
+        
+        if st.session_state.get('enable_deliverables'):
+            with cols[feature_idx % 3]:
+                st.markdown("**💰 Deliverables/IV**")
+                if st.session_state.get('deliverables_complete'):
+                    st.success("✅ Complete")
+                else:
+                    st.info("⏳ Pending")
+            feature_idx += 1
+        
+        if st.session_state.get('enable_expiry_delivery'):
+            with cols[feature_idx % 3]:
+                st.markdown("**📅 Expiry Deliveries**")
+                if st.session_state.get('expiry_deliveries_complete'):
+                    st.success("✅ Complete")
+                else:
+                    st.info("⏳ Pending")
+            feature_idx += 1
+        
+        if st.session_state.get('enable_recon'):
+            with cols[feature_idx % 3]:
+                st.markdown("**🔄 PMS Reconciliation**")
+                if st.session_state.get('recon_complete'):
+                    st.success("✅ Complete")
+                else:
+                    st.info("⏳ Pending")
 
 def display_stage1_results():
     """Display Stage 1 results"""
@@ -709,6 +954,268 @@ def display_stage2_results():
         else:
             st.error(f"⚠️ {len(errors_df)} validation errors")
             st.dataframe(errors_df, use_container_width=True)
+
+def display_deliverables_tab():
+    """Display deliverables and IV analysis"""
+    st.header("💰 Deliverables & Intrinsic Value Analysis")
+    
+    if not st.session_state.get('deliverables_complete'):
+        st.info("Run the pipeline with deliverables enabled to see this analysis")
+        return
+    
+    data = st.session_state.deliverables_data
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    pre_deliv = data['pre_trade']
+    post_deliv = data['post_trade']
+    
+    with col1:
+        pre_total = pre_deliv['Deliverable_Lots'].sum() if not pre_deliv.empty else 0
+        st.metric("Pre-Trade Deliverable (Lots)", f"{pre_total:,.0f}")
+    
+    with col2:
+        post_total = post_deliv['Deliverable_Lots'].sum() if not post_deliv.empty else 0
+        st.metric("Post-Trade Deliverable (Lots)", f"{post_total:,.0f}")
+    
+    with col3:
+        change = post_total - pre_total
+        st.metric("Deliverable Change", f"{change:,.0f}", delta=f"{change:+,.0f}")
+    
+    with col4:
+        pre_iv = pre_deliv['Intrinsic_Value_INR'].sum() if not pre_deliv.empty else 0
+        post_iv = post_deliv['Intrinsic_Value_INR'].sum() if not post_deliv.empty else 0
+        iv_change = post_iv - pre_iv
+        st.metric("IV Change (INR)", f"{iv_change:,.0f}", delta=f"{iv_change:+,.0f}")
+    
+    tab1, tab2, tab3 = st.tabs(["Pre-Trade Deliverables", "Post-Trade Deliverables", "Comparison"])
+    
+    with tab1:
+        if not pre_deliv.empty:
+            st.dataframe(pre_deliv, use_container_width=True, hide_index=True)
+    
+    with tab2:
+        if not post_deliv.empty:
+            st.dataframe(post_deliv, use_container_width=True, hide_index=True)
+    
+    with tab3:
+        if not pre_deliv.empty and not post_deliv.empty:
+            comparison = pd.merge(
+                pre_deliv[['Ticker', 'Deliverable_Lots', 'Intrinsic_Value_INR']],
+                post_deliv[['Ticker', 'Deliverable_Lots', 'Intrinsic_Value_INR']],
+                on='Ticker',
+                how='outer',
+                suffixes=('_Pre', '_Post')
+            ).fillna(0)
+            
+            comparison['Deliv_Change'] = comparison['Deliverable_Lots_Post'] - comparison['Deliverable_Lots_Pre']
+            comparison['IV_Change'] = comparison['Intrinsic_Value_INR_Post'] - comparison['Intrinsic_Value_INR_Pre']
+            
+            st.dataframe(comparison, use_container_width=True, hide_index=True)
+
+def display_expiry_deliveries_tab():
+    """Display expiry delivery results"""
+    st.header("📅 Expiry Physical Deliveries")
+    
+    if not st.session_state.get('expiry_deliveries_complete'):
+        st.info("Run the pipeline with expiry deliveries enabled to see this analysis")
+        return
+    
+    results = st.session_state.get('expiry_delivery_results', {})
+    files = st.session_state.get('expiry_delivery_files', {})
+    
+    if not results and not files:
+        st.warning("No expiry delivery data available")
+        return
+    
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    
+    pre_results = results.get('pre_trade', {})
+    post_results = results.get('post_trade', {})
+    
+    with col1:
+        st.metric("Expiry Dates", len(files))
+    
+    with col2:
+        pre_count = sum(len(data.get('derivatives', pd.DataFrame())) for data in pre_results.values())
+        st.metric("Pre-Trade Deliveries", pre_count)
+    
+    with col3:
+        post_count = sum(len(data.get('derivatives', pd.DataFrame())) for data in post_results.values())
+        st.metric("Post-Trade Deliveries", post_count)
+    
+    # Download section
+    st.markdown("### 📥 Download Expiry Reports")
+    
+    if files:
+        # Create a grid of download buttons
+        cols = st.columns(3)
+        for idx, (expiry_date, file_path) in enumerate(sorted(files.items())):
+            col_idx = idx % 3
+            with cols[col_idx]:
+                try:
+                    with open(file_path, 'rb') as f:
+                        st.download_button(
+                            f"📅 {expiry_date.strftime('%Y-%m-%d')}",
+                            data=f.read(),
+                            file_name=f"EXPIRY_{expiry_date.strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key=f"dl_expiry_{expiry_date}"
+                        )
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    # Detailed view by expiry
+    st.markdown("### 📊 Expiry Details")
+    
+    if pre_results or post_results:
+        all_expiries = sorted(set(list(pre_results.keys()) + list(post_results.keys())))
+        
+        selected_expiry = st.selectbox(
+            "Select Expiry Date",
+            options=all_expiries,
+            format_func=lambda x: x.strftime('%Y-%m-%d')
+        )
+        
+        if selected_expiry:
+            tabs = st.tabs(["Pre-Trade", "Post-Trade", "Comparison"])
+            
+            with tabs[0]:
+                pre_data = pre_results.get(selected_expiry, {})
+                if pre_data:
+                    st.markdown(f"**Positions:** {pre_data.get('position_count', 0)}")
+                    
+                    # Show derivatives
+                    deriv_df = pre_data.get('derivatives', pd.DataFrame())
+                    if not deriv_df.empty:
+                        st.markdown("**Derivative Trades:**")
+                        st.dataframe(deriv_df, use_container_width=True, hide_index=True)
+                    
+                    # Show cash trades
+                    cash_df = pre_data.get('cash_trades', pd.DataFrame())
+                    if not cash_df.empty:
+                        st.markdown("**Cash Trades:**")
+                        st.info("Trade Notes: E=Exercise (long options), A=Assignment (short options)")
+                        st.dataframe(cash_df, use_container_width=True, hide_index=True)
+                    
+                    # Show summary
+                    summary_df = pre_data.get('cash_summary', pd.DataFrame())
+                    if not summary_df.empty:
+                        st.markdown("**Cash Summary:**")
+                        
+                        def highlight_rows(row):
+                            if 'NET DELIVERABLE' in str(row.get('Type', '')) or 'GRAND TOTAL' in str(row.get('Underlying', '')):
+                                return ['background-color: lightblue; font-weight: bold'] * len(row)
+                            return [''] * len(row)
+                        
+                        styled_df = summary_df.style.apply(highlight_rows, axis=1)
+                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No pre-trade positions for this expiry")
+            
+            with tabs[1]:
+                post_data = post_results.get(selected_expiry, {})
+                if post_data:
+                    st.markdown(f"**Positions:** {post_data.get('position_count', 0)}")
+                    
+                    # Show derivatives
+                    deriv_df = post_data.get('derivatives', pd.DataFrame())
+                    if not deriv_df.empty:
+                        st.markdown("**Derivative Trades:**")
+                        st.dataframe(deriv_df, use_container_width=True, hide_index=True)
+                    
+                    # Show cash trades
+                    cash_df = post_data.get('cash_trades', pd.DataFrame())
+                    if not cash_df.empty:
+                        st.markdown("**Cash Trades:**")
+                        st.info("Trade Notes: E=Exercise (long options), A=Assignment (short options)")
+                        st.dataframe(cash_df, use_container_width=True, hide_index=True)
+                    
+                    # Show summary
+                    summary_df = post_data.get('cash_summary', pd.DataFrame())
+                    if not summary_df.empty:
+                        st.markdown("**Cash Summary:**")
+                        
+                        def highlight_rows(row):
+                            if 'NET DELIVERABLE' in str(row.get('Type', '')) or 'GRAND TOTAL' in str(row.get('Underlying', '')):
+                                return ['background-color: lightblue; font-weight: bold'] * len(row)
+                            return [''] * len(row)
+                        
+                        styled_df = summary_df.style.apply(highlight_rows, axis=1)
+                        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No post-trade positions for this expiry")
+            
+            with tabs[2]:
+                pre_data = pre_results.get(selected_expiry, {})
+                post_data = post_results.get(selected_expiry, {})
+                
+                if pre_data and post_data:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Pre-Trade Metrics:**")
+                        pre_deriv = len(pre_data.get('derivatives', pd.DataFrame()))
+                        pre_cash = len(pre_data.get('cash_trades', pd.DataFrame()))
+                        st.write(f"- Derivatives: {pre_deriv}")
+                        st.write(f"- Cash Trades: {pre_cash}")
+                    
+                    with col2:
+                        st.markdown("**Post-Trade Metrics:**")
+                        post_deriv = len(post_data.get('derivatives', pd.DataFrame()))
+                        post_cash = len(post_data.get('cash_trades', pd.DataFrame()))
+                        st.write(f"- Derivatives: {post_deriv}")
+                        st.write(f"- Cash Trades: {post_cash}")
+                    
+                    # Show changes
+                    st.markdown("**Changes:**")
+                    st.write(f"- Derivative Trades: {post_deriv - pre_deriv:+d}")
+                    st.write(f"- Cash Trades: {post_cash - pre_cash:+d}")
+                else:
+                    st.info("Comparison requires both pre and post trade data")
+
+def display_reconciliation_tab():
+    """Display PMS reconciliation results"""
+    st.header("🔄 PMS Position Reconciliation")
+    
+    if not st.session_state.get('recon_complete'):
+        st.info("Run the pipeline with PMS reconciliation enabled to see this analysis")
+        return
+    
+    data = st.session_state.recon_data
+    pre_recon = data['pre_trade']
+    post_recon = data['post_trade']
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Pre-Trade Reconciliation")
+        st.metric("Total Discrepancies", pre_recon['summary']['total_discrepancies'])
+        st.metric("Matched Positions", pre_recon['summary']['matched_count'])
+        st.metric("Mismatches", pre_recon['summary']['mismatch_count'])
+    
+    with col2:
+        st.subheader("Post-Trade Reconciliation")
+        st.metric("Total Discrepancies", post_recon['summary']['total_discrepancies'])
+        st.metric("Matched Positions", post_recon['summary']['matched_count'])
+        st.metric("Mismatches", post_recon['summary']['mismatch_count'])
+    
+    if pre_recon['position_mismatches'] or post_recon['position_mismatches']:
+        st.subheader("Position Mismatches")
+        
+        tab1, tab2 = st.tabs(["Pre-Trade", "Post-Trade"])
+        
+        with tab1:
+            if pre_recon['position_mismatches']:
+                df = pd.DataFrame(pre_recon['position_mismatches'])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        with tab2:
+            if post_recon['position_mismatches']:
+                df = pd.DataFrame(post_recon['position_mismatches'])
+                st.dataframe(df, use_container_width=True, hide_index=True)
 
 def display_downloads():
     """Display download section"""
@@ -790,7 +1297,7 @@ def display_downloads():
                     st.download_button(
                         "💰 Deliverables Report",
                         f.read(),
-                        file_name=st.session_state.deliverables_file,
+                        file_name=Path(st.session_state.deliverables_file).name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         key="dl_deliverables"
@@ -805,7 +1312,7 @@ def display_downloads():
                     st.download_button(
                         "🔄 Reconciliation Report",
                         f.read(),
-                        file_name=st.session_state.recon_file,
+                        file_name=Path(st.session_state.recon_file).name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                         key="dl_recon"
@@ -825,10 +1332,8 @@ def display_schema_info():
     with tab1:
         st.subheader("Current Schema Structure")
         
-        # Get current mapper
         mapper = st.session_state.acm_mapper if st.session_state.acm_mapper else ACMMapper()
         
-        # Display columns
         col1, col2 = st.columns(2)
         
         with col1:
@@ -840,12 +1345,11 @@ def display_schema_info():
         with col2:
             st.markdown("#### Mandatory Fields")
             for col in mapper.mandatory_columns:
-                st.write(f"✓ {col}")
+                st.write(f"✔ {col}")
     
     with tab2:
         st.subheader("Field Mapping Rules")
         
-        # Create mapping table
         mapping_data = []
         for col, rule in mapper.mapping_rules.items():
             mapping_data.append({
@@ -873,255 +1377,11 @@ def display_schema_info():
         
         st.dataframe(rules_df, use_container_width=True, hide_index=True)
 
-# ============ NEW ENHANCED FUNCTIONS ============
-
-def run_deliverables_calculation(usdinr_rate: float, fetch_prices: bool):
-    """Run deliverables and IV calculations"""
-    if not NEW_FEATURES_AVAILABLE:
-        st.error("Deliverables module not available. Please ensure deliverables_calculator.py is in the directory.")
-        return
-        
-    try:
-        if 'dataframes' not in st.session_state or 'stage1' not in st.session_state.dataframes:
-            st.error("Please complete Stage 1 first")
-            return
-        
-        with st.spinner("Calculating deliverables and intrinsic values..."):
-            # Get positions from Stage 1
-            stage1_data = st.session_state.dataframes['stage1']
-            starting_positions = stage1_data.get('starting_positions', pd.DataFrame())
-            final_positions = stage1_data.get('final_positions', pd.DataFrame())
-            
-            # Fetch prices if enabled
-            prices = {}
-            if fetch_prices:
-                # Import PriceFetcher from position_manager if available
-                try:
-                    from position_manager import PriceFetcher
-                    fetcher = PriceFetcher()
-                    
-                    # Get unique symbols
-                    all_symbols = set()
-                    if not starting_positions.empty and 'Symbol' in starting_positions.columns:
-                        all_symbols.update(starting_positions['Symbol'].unique())
-                    if not final_positions.empty and 'Symbol' in final_positions.columns:
-                        all_symbols.update(final_positions['Symbol'].unique())
-                    
-                    if all_symbols:
-                        for symbol in all_symbols:
-                            price = fetcher.fetch_price_for_symbol(symbol)
-                            if price:
-                                prices[symbol] = price
-                except:
-                    st.warning("Could not fetch Yahoo prices")
-            
-            # Calculate deliverables
-            calc = DeliverableCalculator(usdinr_rate)
-            
-            # Generate report
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"output/DELIVERABLES_REPORT_{timestamp}.xlsx"
-            
-            calc.generate_deliverables_report(
-                starting_positions,
-                final_positions,
-                prices,
-                output_file,
-                report_type="TRADE_PROCESSING"
-            )
-            
-            # Store in session state
-            st.session_state.deliverables_file = output_file
-            st.session_state.deliverables_complete = True
-            
-            # Calculate summary for display
-            pre_deliv = calc.calculate_deliverables_from_dataframe(starting_positions, prices)
-            post_deliv = calc.calculate_deliverables_from_dataframe(final_positions, prices)
-            
-            st.session_state.deliverables_data = {
-                'pre_trade': pre_deliv,
-                'post_trade': post_deliv,
-                'prices': prices
-            }
-            
-            st.success(f"✅ Deliverables calculated and saved!")
-            
-    except Exception as e:
-        st.error(f"❌ Error calculating deliverables: {str(e)}")
-        logger.error(traceback.format_exc())
-
-def run_pms_reconciliation(pms_file):
-    """Run PMS reconciliation"""
-    if not NEW_FEATURES_AVAILABLE:
-        st.error("Reconciliation module not available. Please ensure enhanced_recon_module.py is in the directory.")
-        return
-        
-    try:
-        if 'dataframes' not in st.session_state or 'stage1' not in st.session_state.dataframes:
-            st.error("Please complete Stage 1 first")
-            return
-        
-        with st.spinner("Running PMS reconciliation..."):
-            # Save PMS file temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(pms_file.name).suffix) as tmp:
-                tmp.write(pms_file.getbuffer())
-                pms_path = tmp.name
-            
-            # Get positions
-            stage1_data = st.session_state.dataframes['stage1']
-            starting_positions = stage1_data.get('starting_positions', pd.DataFrame())
-            final_positions = stage1_data.get('final_positions', pd.DataFrame())
-            
-            # Run reconciliation
-            recon = EnhancedReconciliation()
-            pms_df = recon.read_pms_file(pms_path)
-            
-            # Generate report
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"output/PMS_RECONCILIATION_{timestamp}.xlsx"
-            
-            recon.create_comprehensive_recon_report(
-                starting_positions,
-                final_positions,
-                pms_df,
-                output_file
-            )
-            
-            # Store results
-            st.session_state.recon_file = output_file
-            st.session_state.recon_complete = True
-            
-            # Store detailed results for display
-            pre_recon = recon.reconcile_positions(starting_positions, pms_df, "Pre-Trade")
-            post_recon = recon.reconcile_positions(final_positions, pms_df, "Post-Trade")
-            
-            st.session_state.recon_data = {
-                'pre_trade': pre_recon,
-                'post_trade': post_recon,
-                'pms_df': pms_df
-            }
-            
-            st.success(f"✅ Reconciliation complete!")
-            
-            # Clean up temp file
-            try:
-                os.unlink(pms_path)
-            except:
-                pass
-                
-    except Exception as e:
-        st.error(f"❌ Error in reconciliation: {str(e)}")
-        logger.error(traceback.format_exc())
-
-def display_deliverables_tab():
-    """Display deliverables and IV analysis"""
-    st.header("💰 Deliverables & Intrinsic Value Analysis")
-    
-    if not st.session_state.get('deliverables_complete'):
-        st.info("Run the pipeline with deliverables enabled to see this analysis")
-        return
-    
-    data = st.session_state.deliverables_data
-    
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    pre_deliv = data['pre_trade']
-    post_deliv = data['post_trade']
-    
-    with col1:
-        pre_total = pre_deliv['Deliverable_Lots'].sum() if not pre_deliv.empty else 0
-        st.metric("Pre-Trade Deliverable (Lots)", f"{pre_total:,.0f}")
-    
-    with col2:
-        post_total = post_deliv['Deliverable_Lots'].sum() if not post_deliv.empty else 0
-        st.metric("Post-Trade Deliverable (Lots)", f"{post_total:,.0f}")
-    
-    with col3:
-        change = post_total - pre_total
-        st.metric("Deliverable Change", f"{change:,.0f}", delta=f"{change:+,.0f}")
-    
-    with col4:
-        pre_iv = pre_deliv['Intrinsic_Value_INR'].sum() if not pre_deliv.empty else 0
-        post_iv = post_deliv['Intrinsic_Value_INR'].sum() if not post_deliv.empty else 0
-        iv_change = post_iv - pre_iv
-        st.metric("IV Change (INR)", f"{iv_change:,.0f}", delta=f"{iv_change:+,.0f}")
-    
-    # Detailed tables
-    tab1, tab2, tab3 = st.tabs(["Pre-Trade Deliverables", "Post-Trade Deliverables", "Comparison"])
-    
-    with tab1:
-        if not pre_deliv.empty:
-            st.dataframe(pre_deliv, use_container_width=True, hide_index=True)
-    
-    with tab2:
-        if not post_deliv.empty:
-            st.dataframe(post_deliv, use_container_width=True, hide_index=True)
-    
-    with tab3:
-        if not pre_deliv.empty and not post_deliv.empty:
-            # Create comparison
-            comparison = pd.merge(
-                pre_deliv[['Ticker', 'Deliverable_Lots', 'Intrinsic_Value_INR']],
-                post_deliv[['Ticker', 'Deliverable_Lots', 'Intrinsic_Value_INR']],
-                on='Ticker',
-                how='outer',
-                suffixes=('_Pre', '_Post')
-            ).fillna(0)
-            
-            comparison['Deliv_Change'] = comparison['Deliverable_Lots_Post'] - comparison['Deliverable_Lots_Pre']
-            comparison['IV_Change'] = comparison['Intrinsic_Value_INR_Post'] - comparison['Intrinsic_Value_INR_Pre']
-            
-            st.dataframe(comparison, use_container_width=True, hide_index=True)
-
-def display_reconciliation_tab():
-    """Display PMS reconciliation results"""
-    st.header("🔄 PMS Position Reconciliation")
-    
-    if not st.session_state.get('recon_complete'):
-        st.info("Run the pipeline with PMS reconciliation enabled to see this analysis")
-        return
-    
-    data = st.session_state.recon_data
-    pre_recon = data['pre_trade']
-    post_recon = data['post_trade']
-    
-    # Summary metrics
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Pre-Trade Reconciliation")
-        st.metric("Total Discrepancies", pre_recon['summary']['total_discrepancies'])
-        st.metric("Matched Positions", pre_recon['summary']['matched_count'])
-        st.metric("Mismatches", pre_recon['summary']['mismatch_count'])
-    
-    with col2:
-        st.subheader("Post-Trade Reconciliation")
-        st.metric("Total Discrepancies", post_recon['summary']['total_discrepancies'])
-        st.metric("Matched Positions", post_recon['summary']['matched_count'])
-        st.metric("Mismatches", post_recon['summary']['mismatch_count'])
-    
-    # Detailed discrepancies
-    if pre_recon['position_mismatches'] or post_recon['position_mismatches']:
-        st.subheader("Position Mismatches")
-        
-        tab1, tab2 = st.tabs(["Pre-Trade", "Post-Trade"])
-        
-        with tab1:
-            if pre_recon['position_mismatches']:
-                df = pd.DataFrame(pre_recon['position_mismatches'])
-                st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        with tab2:
-            if post_recon['position_mismatches']:
-                df = pd.DataFrame(post_recon['position_mismatches'])
-                st.dataframe(df, use_container_width=True, hide_index=True)
-
 # Footer
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    Enhanced Trade Processing Pipeline v3.0 | Complete Feature Set
+    Enhanced Trade Processing Pipeline v3.5 | Complete with Expiry Physical Delivery
 </div>
 """, unsafe_allow_html=True)
 
