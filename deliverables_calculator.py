@@ -264,12 +264,25 @@ class DeliverableCalculator:
                 cell.fill = self.group_fill
                 cell.border = self.border
             
-            # Get spot price
-            spot_price = prices.get(underlying, 0)
+            # Get spot price from Yahoo (try different keys)
+            spot_price = None
+            if prices:
+                # Try underlying first
+                spot_price = prices.get(underlying)
+                # If not found, try the symbol from first position
+                if not spot_price and underlying_positions:
+                    first_symbol = underlying_positions[0].get('symbol', '')
+                    spot_price = prices.get(first_symbol)
+                # If still not found, check if underlying has a space and try first part
+                if not spot_price and ' ' in underlying:
+                    base_ticker = underlying.split(' ')[0]
+                    spot_price = prices.get(base_ticker)
             
-            # System price in group header
+            # System price in group header (Yahoo price)
             if spot_price:
                 ws.cell(row=current_row, column=9, value=spot_price).number_format = self.price_format
+            else:
+                ws.cell(row=current_row, column=9, value="").number_format = self.price_format
             
             # Override price (blank for user input)
             ws.cell(row=current_row, column=10, value="").number_format = self.price_format
@@ -410,10 +423,25 @@ class DeliverableCalculator:
                 ws.cell(row=current_row, column=col).fill = self.group_fill
                 ws.cell(row=current_row, column=col).border = self.border
             
-            # Prices
-            spot_price = prices.get(underlying, 0)
+            # Get Yahoo price (System Price)
+            spot_price = None
+            if prices:
+                # Try underlying first
+                spot_price = prices.get(underlying)
+                # If not found, try the symbol from first position
+                if not spot_price and underlying_positions:
+                    first_symbol = underlying_positions[0].get('symbol', '')
+                    spot_price = prices.get(first_symbol)
+                # If still not found, check if underlying has a space and try first part
+                if not spot_price and ' ' in underlying:
+                    base_ticker = underlying.split(' ')[0]
+                    spot_price = prices.get(base_ticker)
+            
+            # System price (Yahoo price)
             if spot_price:
                 ws.cell(row=current_row, column=12, value=spot_price).number_format = self.price_format
+            else:
+                ws.cell(row=current_row, column=12, value="").number_format = self.price_format
             
             ws.cell(row=current_row, column=13, value="").number_format = self.price_format
             ws.cell(row=current_row, column=14, value=f'=BDP(A{current_row},"PX_LAST")').number_format = self.price_format
@@ -586,16 +614,27 @@ class DeliverableCalculator:
         if not pos:
             return 0
         
-        spot_price = prices.get(pos['underlying'], 0)
+        # Try to get price using multiple keys
+        spot_price = 0
+        if prices:
+            # Try underlying first
+            spot_price = prices.get(pos['underlying'], 0)
+            # If not found, try symbol
+            if not spot_price:
+                spot_price = prices.get(pos['symbol'], 0)
+            # If still not found and underlying has space, try base ticker
+            if not spot_price and ' ' in pos['underlying']:
+                base_ticker = pos['underlying'].split(' ')[0]
+                spot_price = prices.get(base_ticker, 0)
         
         if pos['security_type'] == 'Futures':
             return pos['lots']
         elif pos['security_type'] == 'Call':
-            if spot_price > pos['strike']:
+            if spot_price > 0 and spot_price > pos['strike']:
                 return pos['lots']
             return 0
         elif pos['security_type'] == 'Put':
-            if spot_price < pos['strike']:
+            if spot_price > 0 and spot_price < pos['strike']:
                 return -pos['lots']
             return 0
         
