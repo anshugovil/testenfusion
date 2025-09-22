@@ -1,7 +1,6 @@
 """
-ACM Mapper Module - ENHANCED VERSION
-Supports both hardcoded schema and custom schema file uploads
-Can also export the hardcoded schema as an Excel file
+ACM Mapper Module - UPDATED WITH PROPER DATE FORMATTING
+Trade Date remains datetime, Settle Date is simple date format
 """
 
 import pandas as pd
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class ACMMapper:
-    """Maps processed trades to ACM ListedTrades format - Enhanced Version"""
+    """Maps processed trades to ACM ListedTrades format - Updated Date Formatting"""
     
     # HARDCODED DEFAULT SCHEMA
     DEFAULT_COLUMNS = [
@@ -54,8 +53,8 @@ class ACMMapper:
     
     # MAPPING RULES (for schema export)
     DEFAULT_MAPPINGS = {
-        "Trade Date": "Current datetime (Singapore)",
-        "Settle Date": "Current date (Singapore)",
+        "Trade Date": "Current datetime (Singapore) - MM/DD/YYYY HH:MM:SS",
+        "Settle Date": "Current date (Singapore) - MM/DD/YYYY",
         "Account Id": "Column 0 (Scheme)",
         "Counterparty Code": "Column 13 (CP Code)",
         "Identifier": "Bloomberg_Ticker",
@@ -192,6 +191,11 @@ class ACMMapper:
                     'Transaction Rules Sheet:',
                     '- Defines how Transaction Type is determined from B/S and Opposite? flags',
                     '',
+                    'Date Formatting:',
+                    '- Trade Date: Full datetime with time (MM/DD/YYYY HH:MM:SS)',
+                    '- Settle Date: Date only (MM/DD/YYYY)',
+                    '- All other dates: Simple date format',
+                    '',
                     'To customize:',
                     '1. Modify the Column names or order',
                     '2. Change Mandatory flags as needed',
@@ -222,8 +226,8 @@ class ACMMapper:
     def _get_data_type(self, column: str) -> str:
         """Get data type for a column"""
         type_map = {
-            "Trade Date": "DateTime",
-            "Settle Date": "Date",
+            "Trade Date": "DateTime",  # Only Trade Date is DateTime
+            "Settle Date": "Date",      # Settle Date is just Date
             "Quantity": "Number",
             "Trade Price": "Number",
             "Price": "Number",
@@ -235,8 +239,8 @@ class ACMMapper:
     def _get_description(self, column: str) -> str:
         """Get description for a column"""
         desc_map = {
-            "Trade Date": "Trade execution datetime",
-            "Settle Date": "Settlement date",
+            "Trade Date": "Trade execution datetime (MM/DD/YYYY HH:MM:SS)",
+            "Settle Date": "Settlement date (MM/DD/YYYY)",
             "Account Id": "Trading account identifier",
             "Counterparty Code": "Counterparty identifier",
             "Identifier": "Security identifier (Bloomberg ticker)",
@@ -282,18 +286,23 @@ class ACMMapper:
         
         # Get current timestamps
         now_sg = datetime.now(self.singapore_tz)
+        
+        # UPDATED DATE FORMATTING:
+        # Trade Date: Keep as datetime with time
         trade_date_str = now_sg.strftime("%m/%d/%Y %H:%M:%S")
+        
+        # Settle Date: Date only, no time
         settle_date_str = now_sg.strftime("%m/%d/%Y")
         
         # ==================
         # APPLY MAPPINGS
         # ==================
         
-        # Dates
+        # Dates - UPDATED FORMATTING
         if "Trade Date" in out.columns:
-            out["Trade Date"] = trade_date_str
+            out["Trade Date"] = trade_date_str  # Datetime with time
         if "Settle Date" in out.columns:
-            out["Settle Date"] = settle_date_str
+            out["Settle Date"] = settle_date_str  # Date only
         
         # Account ID
         if "Account Id" in out.columns:
