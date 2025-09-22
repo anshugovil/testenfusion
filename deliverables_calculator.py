@@ -134,6 +134,7 @@ class DeliverableCalculator:
         Following the exact format from the working delivery calculator
         """
         self.wb = Workbook()
+        self.prices = prices  # Store prices as instance variable for access by other methods
         
         # Remove default sheet
         if self.wb.active:
@@ -695,13 +696,17 @@ class DeliverableCalculator:
             ws.column_dimensions[col].width = width
     
     def _write_all_positions_sheet(self, positions: List[Dict], sheet_name: str):
-        """Write sheet with all positions as simple list"""
+        """Write sheet with all positions as simple list with Yahoo prices"""
         if not positions:
             return
             
         ws = self.wb.create_sheet(sheet_name)
         
-        headers = ["Underlying", "Symbol", "Expiry", "Position", "Type", "Strike", "Lot Size"]
+        # Pass prices to this method
+        prices = self.prices if hasattr(self, 'prices') else {}
+        
+        headers = ["Underlying", "Symbol", "Expiry", "Position", "Type", "Strike", "Lot Size", 
+                  "Yahoo Price", "Moneyness", "Deliverable"]
         
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col, value=header)
@@ -725,13 +730,72 @@ class DeliverableCalculator:
             
             ws.cell(row=current_row, column=7, value=pos['lot_size'])
             
-            for col in range(1, 8):
+            # Get Yahoo price
+            spot_price = None
+            if prices:
+                # Try underlying first
+                spot_price = prices.get(pos['underlying'])
+                # If not found, try symbol
+                if not spot_price:
+                    spot_price = prices.get(pos['symbol'])
+                # If still not found and underlying has space, try base ticker
+                if not spot_price and ' ' in pos['underlying']:
+                    base_ticker = pos['underlying'].split(' ')[0]
+                    spot_price = prices.get(base_ticker)
+            
+            # Yahoo Price column
+            if spot_price:
+                ws.cell(row=current_row, column=8, value=spot_price).number_format = self.price_format
+            else:
+                ws.cell(row=current_row, column=8, value="N/A")
+            
+            # Moneyness column
+            moneyness = ""
+            if spot_price and pos['security_type'] in ['Call', 'Put']:
+                if pos['security_type'] == 'Call':
+                    if spot_price > pos['strike'] * 1.01:
+                        moneyness = "ITM"
+                    elif spot_price < pos['strike'] * 0.99:
+                        moneyness = "OTM"
+                    else:
+                        moneyness = "ATM"
+                else:  # Put
+                    if spot_price < pos['strike'] * 0.99:
+                        moneyness = "ITM"
+                    elif spot_price > pos['strike'] * 1.01:
+                        moneyness = "OTM"
+                    else:
+                        moneyness = "ATM"
+            elif pos['security_type'] == 'Futures':
+                moneyness = "N/A"
+            ws.cell(row=current_row, column=9, value=moneyness)
+            
+            # Deliverable column
+            deliverable = 0
+            if spot_price or pos['security_type'] == 'Futures':
+                deliverable = self._calculate_position_deliverable(pos, prices)
+            ws.cell(row=current_row, column=10, value=deliverable).number_format = self.deliv_format
+            
+            # Apply borders
+            for col in range(1, 11):
                 ws.cell(row=current_row, column=col).border = self.border
             
             current_row += 1
         
+        # Add totals row
+        total_row = current_row + 1
+        ws.cell(row=total_row, column=1, value="TOTAL").font = Font(bold=True)
+        ws.cell(row=total_row, column=4, value=f"=SUM(D2:D{current_row-1})").font = Font(bold=True)
+        ws.cell(row=total_row, column=10, value=f"=SUM(J2:J{current_row-1})").font = Font(bold=True)
+        ws.cell(row=total_row, column=10).number_format = self.deliv_format
+        
+        for col in range(1, 11):
+            ws.cell(row=total_row, column=col).border = self.border
+            ws.cell(row=total_row, column=col).fill = self.header_fill
+        
         # Set column widths
-        widths = {'A': 25, 'B': 35, 'C': 12, 'D': 10, 'E': 8, 'F': 10, 'G': 10}
+        widths = {'A': 25, 'B': 35, 'C': 12, 'D': 10, 'E': 8, 'F': 10, 'G': 10, 
+                 'H': 12, 'I': 12, 'J': 12}
         for col, width in widths.items():
             ws.column_dimensions[col].width = width
     
