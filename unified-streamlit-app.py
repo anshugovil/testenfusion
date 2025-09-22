@@ -1,6 +1,7 @@
 """
-Unified Trade Processing Pipeline - Fixed for Streamlit Cloud
+Unified Trade Processing Pipeline - Complete Version
 Combines Strategy Processing (Stage 1) and ACM Mapping (Stage 2)
+No external schema file required - ACM mappings are hardcoded
 """
 
 import streamlit as st
@@ -23,7 +24,7 @@ if str(current_dir) not in sys.path:
 if str(modules_dir) not in sys.path:
     sys.path.insert(0, str(modules_dir))
 
-# Now try importing - use direct imports if modules folder doesn't work
+# Import all modules with error handling
 try:
     from modules.input_parser import InputParser
     from modules.trade_parser import TradeParser  
@@ -120,15 +121,6 @@ def main():
     st.title("🎯 Unified Trade Processing Pipeline")
     st.markdown("### Complete pipeline from raw trades to ACM ListedTrades format")
     
-    # Debug info (remove in production)
-    with st.expander("Debug Info"):
-        st.write("Current Directory:", os.getcwd())
-        st.write("Script Location:", __file__)
-        st.write("Python Path:", sys.path[:3])
-        st.write("Files in current dir:", os.listdir('.'))
-        if Path('modules').exists():
-            st.write("Files in modules:", os.listdir('modules'))
-    
     # Initialize session state
     if 'stage1_complete' not in st.session_state:
         st.session_state.stage1_complete = False
@@ -202,55 +194,15 @@ def main():
             mapping_file = st.file_uploader(
                 "Upload Mapping File",
                 type=['csv'],
-                key='mapping_file'
+                key='mapping_file',
+                help="CSV file with symbol-to-ticker mappings"
             )
             use_default_mapping = None
         
         st.divider()
         
         st.markdown("### Stage 2: ACM Mapping")
-        
-        # ACM Schema file
-        default_schema = None
-        schema_locations = [
-            "acm_schema.xlsx",
-            "data/acm_schema.xlsx",
-            "./acm_schema.xlsx",
-            "./data/acm_schema.xlsx"
-        ]
-        
-        for location in schema_locations:
-            if Path(location).exists():
-                default_schema = location
-                break
-        
-        if default_schema:
-            use_default_schema = st.radio(
-                "Schema source:",
-                ["Use default from repository", "Upload custom"],
-                index=0,
-                key="schema_radio"
-            )
-            
-            if use_default_schema == "Upload custom":
-                schema_file = st.file_uploader(
-                    "Upload ACM Schema",
-                    type=['xlsx', 'xls'],
-                    key='schema_file',
-                    help="Excel file with 'Columns' sheet"
-                )
-            else:
-                schema_file = None
-                st.success(f"✔ Using {Path(default_schema).name}")
-        else:
-            st.info("Upload ACM schema file")
-            schema_file = st.file_uploader(
-                "Upload ACM Schema",
-                type=['xlsx', 'xls'],
-                key='schema_file',
-                help="Excel file with 'Columns' sheet"
-            )
-            use_default_schema = None
+        st.info("✅ Uses built-in ACM format - no schema file needed!")
         
         st.divider()
         
@@ -261,10 +213,8 @@ def main():
             (mapping_file is not None or (use_default_mapping == "Use default from repository" and default_mapping))
         )
         
-        can_process_stage2 = (
-            st.session_state.stage1_complete and
-            (schema_file is not None or (use_default_schema == "Use default from repository" and default_schema))
-        )
+        # Stage 2 only requires Stage 1 to be complete (no schema file needed!)
+        can_process_stage2 = st.session_state.stage1_complete
         
         col1, col2 = st.columns(2)
         
@@ -274,13 +224,20 @@ def main():
         
         with col2:
             if st.button("🎯 Run Stage 2", type="secondary", use_container_width=True, disabled=not can_process_stage2):
-                process_stage2(schema_file, use_default_schema, default_schema)
+                process_stage2()
         
-        if can_process_stage1 and (schema_file or default_schema):
+        if can_process_stage1:
             st.divider()
             if st.button("⚡ Run Complete Pipeline", type="primary", use_container_width=True):
                 if process_stage1(position_file, trade_file, mapping_file, use_default_mapping, default_mapping):
-                    process_stage2(schema_file, use_default_schema, default_schema)
+                    process_stage2()
+        
+        # Reset button
+        st.divider()
+        if st.button("🔄 Reset All", type="secondary", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
     
     # Main content area
     tabs = st.tabs([
@@ -333,6 +290,8 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
                 st.error("❌ No positions found in Stage 1")
                 return False
             
+            st.success(f"✅ Parsed {len(positions)} positions ({input_parser.format_type} format)")
+            
             # Parse trades
             trade_parser = TradeParser(map_path)
             
@@ -346,6 +305,15 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
             if not trades:
                 st.error("❌ No trades found in Stage 1")
                 return False
+            
+            st.success(f"✅ Parsed {len(trades)} trades ({trade_parser.format_type} format)")
+            
+            # Check for missing mappings
+            missing_positions = len(input_parser.unmapped_symbols) if hasattr(input_parser, 'unmapped_symbols') else 0
+            missing_trades = len(trade_parser.unmapped_symbols) if hasattr(trade_parser, 'unmapped_symbols') else 0
+            
+            if missing_positions > 0 or missing_trades > 0:
+                st.warning(f"⚠️ Found unmapped symbols: {missing_positions} from positions, {missing_trades} from trades")
             
             # Process trades
             position_manager = PositionManager()
@@ -380,6 +348,19 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
             st.session_state.stage1_complete = True
             st.session_state.processed_trades_for_acm = processed_trades_df
             
+            # Show summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Starting Positions", len(starting_positions_df))
+            with col2:
+                st.metric("Trades Processed", len(trades))
+            with col3:
+                if 'Split?' in processed_trades_df.columns:
+                    splits = len(processed_trades_df[processed_trades_df['Split?'] == 'Yes'])
+                    st.metric("Split Trades", splits)
+            with col4:
+                st.metric("Final Positions", len(final_positions_df))
+            
             st.success("✅ Stage 1 Complete!")
             return True
             
@@ -388,29 +369,21 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
         st.code(traceback.format_exc())
         return False
 
-def process_stage2(schema_file, use_default, default_path):
-    """Process Stage 2: ACM Mapping"""
+def process_stage2():
+    """Process Stage 2: ACM Mapping - No schema file required!"""
     try:
-        with st.spinner("Processing Stage 2: ACM Mapping..."):
+        with st.spinner("Processing Stage 2: ACM Mapping (using built-in schema)..."):
             if 'processed_trades_for_acm' not in st.session_state:
                 st.error("❌ Stage 1 must be completed first")
                 return False
             
             processed_trades_df = st.session_state.processed_trades_for_acm
             
-            # Get temp directory
-            temp_dir = get_temp_dir()
+            # Initialize ACM Mapper - NO SCHEMA FILE NEEDED!
+            # The schema is hardcoded in the ACMMapper class
+            acm_mapper = ACMMapper()
             
-            # Get schema path
-            if schema_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx', dir=temp_dir) as tmp:
-                    tmp.write(schema_file.getbuffer())
-                    schema_path = tmp.name
-            else:
-                schema_path = default_path
-            
-            # Initialize ACM Mapper
-            acm_mapper = ACMMapper(schema_path)
+            st.info("Using hardcoded ACM schema - no configuration file needed")
             
             # Process to ACM format
             mapped_df, errors_df = acm_mapper.process_trades_to_acm(processed_trades_df)
@@ -438,10 +411,19 @@ def process_stage2(schema_file, use_default, default_path):
             }
             st.session_state.stage2_complete = True
             
+            # Show results
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Records Mapped", len(mapped_df))
+            with col2:
+                st.metric("Validation Errors", len(errors_df))
+            
             if len(errors_df) == 0:
                 st.success("✅ Stage 2 Complete! No validation errors.")
             else:
                 st.warning(f"⚠️ Stage 2 Complete with {len(errors_df)} validation errors.")
+                with st.expander("View Errors"):
+                    st.dataframe(errors_df, use_container_width=True)
             
             return True
             
@@ -462,7 +444,7 @@ def display_pipeline_overview():
         **Input:**
         - Position File (BOD/Contract/MS)
         - Trade File (MS format)
-        - Symbol Mapping
+        - Symbol Mapping CSV
         
         **Processing:**
         - Bloomberg ticker generation
@@ -478,6 +460,16 @@ def display_pipeline_overview():
         
         if st.session_state.stage1_complete:
             st.success("✅ Stage 1 Complete")
+            if 'stage1' in st.session_state.dataframes:
+                df = st.session_state.dataframes['stage1']['processed_trades']
+                metrics = st.columns(3)
+                with metrics[0]:
+                    st.metric("Total Trades", len(df))
+                if 'Strategy' in df.columns:
+                    with metrics[1]:
+                        st.metric("FULO", len(df[df['Strategy'] == 'FULO']))
+                    with metrics[2]:
+                        st.metric("FUSH", len(df[df['Strategy'] == 'FUSH']))
     
     with col2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -488,7 +480,7 @@ def display_pipeline_overview():
         st.info("""
         **Input:**
         - Processed trades from Stage 1
-        - ACM schema definition
+        - Built-in ACM schema (hardcoded)
         
         **Processing:**
         - Field mapping to ACM format
@@ -503,6 +495,14 @@ def display_pipeline_overview():
         
         if st.session_state.stage2_complete:
             st.success("✅ Stage 2 Complete")
+            if 'stage2' in st.session_state.dataframes:
+                mapped_df = st.session_state.dataframes['stage2']['mapped']
+                errors_df = st.session_state.dataframes['stage2']['errors']
+                metrics = st.columns(2)
+                with metrics[0]:
+                    st.metric("ACM Records", len(mapped_df))
+                with metrics[1]:
+                    st.metric("Errors", len(errors_df))
 
 def display_stage1_results():
     """Display Stage 1 results"""
@@ -528,21 +528,52 @@ def display_stage1_results():
     with sub_tabs[0]:
         df = data['processed_trades']
         st.subheader("Processed Trades with Strategy Assignment")
+        
+        # Show summary metrics
+        if not df.empty:
+            metrics = st.columns(4)
+            with metrics[0]:
+                st.metric("Total Trades", len(df))
+            if 'Strategy' in df.columns:
+                with metrics[1]:
+                    st.metric("FULO", len(df[df['Strategy'] == 'FULO']))
+                with metrics[2]:
+                    st.metric("FUSH", len(df[df['Strategy'] == 'FUSH']))
+            if 'Split?' in df.columns:
+                with metrics[3]:
+                    st.metric("Splits", len(df[df['Split?'] == 'Yes']))
+        
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[1]:
         df = data['starting_positions']
         st.subheader("Starting Positions")
+        if not df.empty:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Positions", len(df))
+            with col2:
+                if 'QTY' in df.columns:
+                    st.metric("Long", len(df[df['QTY'] > 0]))
+                    st.metric("Short", len(df[df['QTY'] < 0]))
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[2]:
         df = data['final_positions']
         st.subheader("Final Positions")
+        if not df.empty:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Positions", len(df))
+            with col2:
+                if 'QTY' in df.columns:
+                    st.metric("Long", len(df[df['QTY'] > 0]))
+                    st.metric("Short", len(df[df['QTY'] < 0]))
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[3]:
         df = data['parsed_trades']
-        st.subheader("Parsed Trades")
+        st.subheader("Parsed Trades (Original)")
         st.dataframe(df, use_container_width=True, height=400)
 
 def display_stage2_results():
@@ -550,7 +581,10 @@ def display_stage2_results():
     st.header("Stage 2: ACM Mapping Results")
     
     if not st.session_state.stage2_complete:
-        st.info("Stage 2 has not been run yet. Complete Stage 1 first, then run Stage 2.")
+        if st.session_state.stage1_complete:
+            st.info("Stage 2 has not been run yet. Click 'Run Stage 2' to process.")
+        else:
+            st.info("Complete Stage 1 first, then run Stage 2.")
         return
     
     if 'stage2' not in st.session_state.dataframes:
@@ -559,20 +593,67 @@ def display_stage2_results():
     
     data = st.session_state.dataframes['stage2']
     
-    sub_tabs = st.tabs(["ACM Mapped Data", "Validation Errors"])
+    sub_tabs = st.tabs(["ACM Mapped Data", "Validation Errors", "Field Summary"])
     
     with sub_tabs[0]:
         df = data['mapped']
         st.subheader("ACM ListedTrades Format")
+        
+        # Show metrics
+        if not df.empty:
+            metrics = st.columns(4)
+            with metrics[0]:
+                st.metric("Total Records", len(df))
+            if 'Transaction Type' in df.columns:
+                with metrics[1]:
+                    trans_types = df['Transaction Type'].nunique()
+                    st.metric("Transaction Types", trans_types)
+            if 'Strategy' in df.columns:
+                with metrics[2]:
+                    strategies = df['Strategy'].nunique()
+                    st.metric("Unique Strategies", strategies)
+            if 'Account Id' in df.columns:
+                with metrics[3]:
+                    accounts = df['Account Id'].nunique()
+                    st.metric("Unique Accounts", accounts)
+        
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[1]:
         errors_df = data['errors']
         if len(errors_df) == 0:
-            st.success("✅ No validation errors found!")
+            st.success("✅ No validation errors found! All mandatory fields are populated.")
         else:
             st.error(f"⚠️ Found {len(errors_df)} validation errors")
-            st.dataframe(errors_df, use_container_width=True, height=400)
+            
+            # Group errors by column
+            if not errors_df.empty:
+                error_summary = errors_df.groupby('column').size().reset_index(name='count')
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.subheader("Errors by Field")
+                    st.dataframe(error_summary, use_container_width=True)
+                with col2:
+                    st.subheader("Error Details")
+                    st.dataframe(errors_df, use_container_width=True, height=300)
+    
+    with sub_tabs[2]:
+        df = data['mapped']
+        st.subheader("Field Population Summary")
+        if not df.empty:
+            # Check which fields are populated
+            field_summary = []
+            for col in df.columns:
+                non_empty = df[col].astype(str).str.strip().replace('', pd.NA).notna().sum()
+                field_summary.append({
+                    'Field': col,
+                    'Populated': non_empty,
+                    'Empty': len(df) - non_empty,
+                    'Percentage': f"{(non_empty/len(df)*100):.1f}%"
+                })
+            
+            summary_df = pd.DataFrame(field_summary)
+            st.dataframe(summary_df, use_container_width=True)
 
 def display_downloads():
     """Display download section"""
@@ -586,24 +667,27 @@ def display_downloads():
         if st.session_state.stage1_complete and st.session_state.stage1_outputs:
             for key, path in st.session_state.stage1_outputs.items():
                 if path and Path(path).exists():
-                    with open(path, 'rb') as f:
-                        data = f.read()
-                    
-                    mime = 'text/csv'
-                    if 'excel' in key:
-                        mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                    elif 'summary' in key:
-                        mime = 'text/plain'
-                    
-                    label = key.replace('_', ' ').title()
-                    st.download_button(
-                        f"📄 {label}",
-                        data,
-                        file_name=Path(path).name,
-                        mime=mime,
-                        key=f"dl_stage1_{key}",
-                        use_container_width=True
-                    )
+                    try:
+                        with open(path, 'rb') as f:
+                            data = f.read()
+                        
+                        mime = 'text/csv'
+                        if 'excel' in key:
+                            mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        elif 'summary' in key:
+                            mime = 'text/plain'
+                        
+                        label = key.replace('_', ' ').title()
+                        st.download_button(
+                            f"📄 {label}",
+                            data,
+                            file_name=Path(path).name,
+                            mime=mime,
+                            key=f"dl_stage1_{key}",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.warning(f"Could not load {key}: {e}")
         else:
             st.info("No Stage 1 outputs available yet")
     
@@ -613,18 +697,21 @@ def display_downloads():
         if st.session_state.stage2_complete and st.session_state.stage2_outputs:
             for key, path in st.session_state.stage2_outputs.items():
                 if path and Path(path).exists():
-                    with open(path, 'rb') as f:
-                        data = f.read()
-                    
-                    label = "ACM ListedTrades" if 'acm' in key else "Validation Errors"
-                    st.download_button(
-                        f"📄 {label}",
-                        data,
-                        file_name=Path(path).name,
-                        mime='text/csv',
-                        key=f"dl_stage2_{key}",
-                        use_container_width=True
-                    )
+                    try:
+                        with open(path, 'rb') as f:
+                            data = f.read()
+                        
+                        label = "📊 ACM ListedTrades" if 'acm' in key else "⚠️ Validation Errors"
+                        st.download_button(
+                            label,
+                            data,
+                            file_name=Path(path).name,
+                            mime='text/csv',
+                            key=f"dl_stage2_{key}",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.warning(f"Could not load {key}: {e}")
         else:
             st.info("No Stage 2 outputs available yet")
 
@@ -632,7 +719,7 @@ def display_downloads():
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    Trade Processing Pipeline v2.0 | Combines Strategy Processing + ACM Mapping
+    Trade Processing Pipeline v2.0 | Strategy Processing + ACM Mapping | No Schema File Required
 </div>
 """, unsafe_allow_html=True)
 
