@@ -1,6 +1,6 @@
 """
-Output Generator Module - ENHANCED VERSION
-Handles creation and export of all output files including missing mappings report
+Output Generator Module - UPDATED WITH SIMPLE DATE FORMAT
+All dates in output files are formatted as simple dates (YYYY-MM-DD) except Trade Date in ACM
 """
 
 import pandas as pd
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class OutputGenerator:
-    """Generates and saves all output files"""
+    """Generates and saves all output files with proper date formatting"""
     
     def __init__(self, output_dir: str = "./output"):
         self.output_dir = Path(output_dir)
@@ -30,33 +30,39 @@ class OutputGenerator:
                         input_parser=None,
                         trade_parser=None) -> Dict[str, Path]:
         """
-        Save all output files including missing mappings report
+        Save all output files with proper date formatting
         Returns dictionary of file type to file path
         """
         output_files = {}
         
+        # Ensure all DataFrames have dates formatted properly
+        parsed_trades_df = self._format_dates_in_dataframe(parsed_trades_df)
+        starting_positions_df = self._format_dates_in_dataframe(starting_positions_df)
+        processed_trades_df = self._format_dates_in_dataframe(processed_trades_df)
+        final_positions_df = self._format_dates_in_dataframe(final_positions_df)
+        
         # File 1: Parsed Trade File (original trades from parser)
         parsed_trades_file = self.output_dir / f"{file_prefix}_1_parsed_trades_{self.timestamp}.csv"
-        parsed_trades_df.to_csv(parsed_trades_file, index=False)
+        parsed_trades_df.to_csv(parsed_trades_file, index=False, date_format='%Y-%m-%d')
         output_files['parsed_trades'] = parsed_trades_file
         logger.info(f"Saved parsed trades to {parsed_trades_file}")
         
         # File 2: Starting Position File
         starting_pos_file = self.output_dir / f"{file_prefix}_2_starting_positions_{self.timestamp}.csv"
-        starting_positions_df.to_csv(starting_pos_file, index=False)
+        starting_positions_df.to_csv(starting_pos_file, index=False, date_format='%Y-%m-%d')
         output_files['starting_positions'] = starting_pos_file
         logger.info(f"Saved starting positions to {starting_pos_file}")
         
         # File 3: Processed Trade File (main output with strategies)
         processed_trades_file = self.output_dir / f"{file_prefix}_3_processed_trades_{self.timestamp}.csv"
-        processed_trades_df.to_csv(processed_trades_file, index=False)
+        processed_trades_df.to_csv(processed_trades_file, index=False, date_format='%Y-%m-%d')
         output_files['processed_trades'] = processed_trades_file
         logger.info(f"Saved processed trades to {processed_trades_file}")
         
         # Also save as Excel for better readability
         try:
             processed_trades_excel = self.output_dir / f"{file_prefix}_3_processed_trades_{self.timestamp}.xlsx"
-            with pd.ExcelWriter(processed_trades_excel, engine='openpyxl') as writer:
+            with pd.ExcelWriter(processed_trades_excel, engine='openpyxl', date_format='YYYY-MM-DD') as writer:
                 processed_trades_df.to_excel(writer, sheet_name='Processed Trades', index=False)
                 
                 # Auto-adjust column widths
@@ -76,7 +82,7 @@ class OutputGenerator:
         
         # File 4: Final Position File
         final_pos_file = self.output_dir / f"{file_prefix}_4_final_positions_{self.timestamp}.csv"
-        final_positions_df.to_csv(final_pos_file, index=False)
+        final_positions_df.to_csv(final_pos_file, index=False, date_format='%Y-%m-%d')
         output_files['final_positions'] = final_pos_file
         logger.info(f"Saved final positions to {final_pos_file}")
         
@@ -99,6 +105,33 @@ class OutputGenerator:
         
         return output_files
     
+    def _format_dates_in_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Format date columns in DataFrame to simple date format (YYYY-MM-DD)
+        Handles both datetime objects and strings
+        """
+        if df.empty:
+            return df
+        
+        df = df.copy()
+        
+        # List of columns that typically contain dates
+        date_columns = ['Expiry', 'expiry', 'Expiry_Date', 'expiry_date']
+        
+        for col in df.columns:
+            if col in date_columns or 'expiry' in col.lower():
+                if col in df.columns:
+                    # Convert to datetime first if not already
+                    try:
+                        df[col] = pd.to_datetime(df[col])
+                        # Format as simple date string
+                        df[col] = df[col].dt.strftime('%Y-%m-%d')
+                    except:
+                        # If conversion fails, check if it's already a string in correct format
+                        pass
+        
+        return df
+    
     def create_missing_mappings_report(self, input_parser=None, trade_parser=None) -> Optional[Path]:
         """
         Create a report of all unmapped symbols from both parsers
@@ -109,10 +142,15 @@ class OutputGenerator:
         # Collect from input parser (positions)
         if input_parser and hasattr(input_parser, 'unmapped_symbols'):
             for item in input_parser.unmapped_symbols:
+                # Format expiry as simple date if it exists
+                expiry = item.get('expiry', '')
+                if expiry and hasattr(expiry, 'strftime'):
+                    expiry = expiry.strftime('%Y-%m-%d')
+                
                 all_missing.append({
                     'Source': 'Position File',
                     'Symbol': item.get('symbol', ''),
-                    'Expiry': item.get('expiry', ''),
+                    'Expiry': expiry,
                     'Quantity': item.get('position_lots', 0),
                     'Suggested_Ticker': self._suggest_ticker(item.get('symbol', '')),
                     'Underlying': '',
@@ -123,10 +161,15 @@ class OutputGenerator:
         # Collect from trade parser
         if trade_parser and hasattr(trade_parser, 'unmapped_symbols'):
             for item in trade_parser.unmapped_symbols:
+                # Format expiry as simple date if it exists
+                expiry = item.get('expiry', '')
+                if expiry and hasattr(expiry, 'strftime'):
+                    expiry = expiry.strftime('%Y-%m-%d')
+                    
                 all_missing.append({
                     'Source': 'Trade File',
                     'Symbol': item.get('symbol', ''),
-                    'Expiry': item.get('expiry', ''),
+                    'Expiry': expiry,
                     'Quantity': item.get('position_lots', 0),
                     'Suggested_Ticker': self._suggest_ticker(item.get('symbol', '')),
                     'Underlying': '',
@@ -157,7 +200,7 @@ class OutputGenerator:
         
         # Save to CSV
         missing_file = self.output_dir / f"MISSING_MAPPINGS_{self.timestamp}.csv"
-        unique_symbols.to_csv(missing_file, index=False)
+        unique_symbols.to_csv(missing_file, index=False, date_format='%Y-%m-%d')
         
         # Also create a template for easy addition to mapping file
         template_file = self.output_dir / f"MAPPING_TEMPLATE_{self.timestamp}.csv"
@@ -189,7 +232,7 @@ class OutputGenerator:
             'NIFTY': 'NZ',
             'BANKNIFTY': 'AF1',
             'FINNIFTY': 'FINNIFTY',
-            'MIDCPNIFTY': 'MIDCPNIFTY'
+            'MIDCPNIFTY': 'RNS'
         }
         
         for key, value in index_map.items():
@@ -242,8 +285,8 @@ class OutputGenerator:
                         f.write(f" ... and {len(unique_trade_symbols) - 10} more")
                     f.write("\n")
                 
-                f.write("\n📝 Check MISSING_MAPPINGS_*.csv for complete list\n")
-                f.write("📝 Use MAPPING_TEMPLATE_*.csv to add to your mapping file\n\n")
+                f.write("\n📋 Check MISSING_MAPPINGS_*.csv for complete list\n")
+                f.write("📋 Use MAPPING_TEMPLATE_*.csv to add to your mapping file\n\n")
             
             # Starting positions summary
             f.write("STARTING POSITIONS:\n")
@@ -300,6 +343,14 @@ class OutputGenerator:
                 if closed_positions:
                     f.write(f"  Positions closed: {len(closed_positions)}\n")
             
+            # Note about date formatting
+            f.write("\n")
+            f.write("DATE FORMAT NOTES:\n")
+            f.write("-" * 30 + "\n")
+            f.write("All dates in Stage 1 outputs: YYYY-MM-DD (simple date format)\n")
+            f.write("ACM Trade Date (Stage 2): MM/DD/YYYY HH:MM:SS (datetime format)\n")
+            f.write("ACM Settle Date (Stage 2): MM/DD/YYYY (simple date format)\n")
+            
             f.write("\n" + "=" * 60 + "\n")
             f.write("END OF REPORT\n")
             f.write("=" * 60 + "\n")
@@ -308,14 +359,17 @@ class OutputGenerator:
         return summary_file
     
     def create_trade_dataframe_from_positions(self, positions: List) -> pd.DataFrame:
-        """Convert Position objects to DataFrame for parsed trades output"""
+        """Convert Position objects to DataFrame for parsed trades output with simple date format"""
         trades_data = []
         
         for pos in positions:
+            # Format expiry as simple date
+            expiry_str = pos.expiry_date.strftime('%Y-%m-%d')
+            
             trade_dict = {
                 'Symbol': pos.symbol,
                 'Bloomberg_Ticker': pos.bloomberg_ticker,
-                'Expiry': pos.expiry_date,
+                'Expiry': expiry_str,  # Simple date format
                 'Strike': pos.strike_price,
                 'Security_Type': pos.security_type,
                 'Lots': pos.position_lots,
