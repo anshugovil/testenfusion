@@ -1,6 +1,7 @@
 """
 Position Manager Module - WITH YAHOO PRICE FETCHING
 Fetches underlying security prices based on Symbol column for ITM/OTM analysis
+Shows N/A when price cannot be fetched
 """
 
 from dataclasses import dataclass, field
@@ -26,100 +27,111 @@ class PriceFetcher:
     def __init__(self):
         self.price_cache = {}
     
-    def fetch_price_for_symbol(self, symbol: str) -> float:
-        """Fetch current price for a single symbol"""
+    def fetch_price_for_symbol(self, symbol: str) -> Optional[float]:
+        """
+        Fetch current price for a single symbol
+        Returns None if price cannot be fetched
+        """
         # Check cache first
         if symbol in self.price_cache:
             return self.price_cache[symbol]
         
         if not YFINANCE_AVAILABLE:
-            # Return dummy price for testing
-            return self._get_dummy_price(symbol)
+            logger.warning(f"yfinance not available for {symbol}")
+            self.price_cache[symbol] = None
+            return None
         
-        price_found = False
-        price = 0.0
+        # Clean the symbol - remove any extra spaces or special characters
+        symbol_clean = str(symbol).strip().upper()
         
-        # Special handling for Indian indices
-        if symbol.upper() == 'NIFTY':
-            yahoo_symbols = ['^NSEI']  # NIFTY 50 index
-        elif symbol.upper() == 'BANKNIFTY':
-            yahoo_symbols = ['^NSEBANK']  # Bank Nifty index
-        elif symbol.upper() == 'FINNIFTY':
-            yahoo_symbols = ['^CNXFIN']  # Nifty Financial Services
-        elif symbol.upper() == 'MIDCPNIFTY':
-            yahoo_symbols = ['^NSEMDCP50']  # Nifty Midcap 50
-        else:
-            # Regular stocks - try different Yahoo formats
-            yahoo_symbols = [
-                f"{symbol}.NS",  # NSE
-                f"{symbol}.BO",  # BSE  
-                symbol           # Direct ticker
-            ]
-        
-        # Try history() method first
-        for yahoo_symbol in yahoo_symbols:
-            if price_found:
+        # Remove common suffixes that might be in the symbol
+        for suffix in ['-EQ', '_EQ', '.EQ', '-BE', '.BE', '-BZ', '.BZ']:
+            if symbol_clean.endswith(suffix):
+                symbol_clean = symbol_clean[:-len(suffix)]
                 break
-                
-            try:
-                ticker_obj = yf.Ticker(yahoo_symbol)
-                hist = ticker_obj.history(period="1d")
-                
-                if not hist.empty and 'Close' in hist:
-                    price = float(hist['Close'].iloc[-1])
-                    if price and price > 0:
-                        price_found = True
-                        logger.info(f"Found price for {symbol}: {price:.2f} using {yahoo_symbol}")
-                        break
-            except Exception as e:
-                continue
         
-        # Try info() method as fallback
-        if not price_found:
-            for yahoo_symbol in yahoo_symbols:
-                try:
-                    ticker_obj = yf.Ticker(yahoo_symbol)
-                    info = ticker_obj.info
-                    
-                    if 'currentPrice' in info and info['currentPrice']:
-                        price = float(info['currentPrice'])
-                    elif 'regularMarketPrice' in info and info['regularMarketPrice']:
-                        price = float(info['regularMarketPrice'])
-                    elif 'previousClose' in info and info['previousClose']:
-                        price = float(info['previousClose'])
-                    
-                    if price and price > 0:
-                        price_found = True
-                        logger.info(f"Found price for {symbol}: {price:.2f} from info using {yahoo_symbol}")
-                        break
-                except:
-                    continue
+        price = None
         
-        if not price_found:
-            logger.warning(f"Could not fetch price for {symbol}, using dummy price")
-            price = self._get_dummy_price(symbol)
+        # Special handling for indices
+        index_mapping = {
+            'NIFTY': '^NSEI',
+            'NIFTY50': '^NSEI',
+            'NF': '^NSEI',
+            'NZ': '^NSEI',  # Bloomberg ticker for NIFTY
+            'BANKNIFTY': '^NSEBANK',
+            'BNF': '^NSEBANK',
+            'BANKN': '^NSEBANK',
+            'NSEBANK': '^NSEBANK',
+            'AF1': '^NSEBANK',  # Bloomberg ticker for BANKNIFTY
+            'AF': '^NSEBANK',
+            'FINNIFTY': '^CNXFIN',
+            'FNF': '^CNXFIN',
+            'FINNNIFTY': '^CNXFIN',
+            'MIDCPNIFTY': '^NSEMDCP50',
+            'MIDCAP': '^NSEMDCP50',
+            'MCN': '^NSEMDCP50',
+            'NMIDSELP': '^NSEMDCP50',  # Bloomberg ticker
+            'RNS': '^NSEMDCP50',  # Bloomberg ticker for MIDCPNIFTY
+        }
         
-        # Cache the price
+        # Check if it's an index
+        yahoo_symbol = None
+        if symbol_clean in index_mapping:
+            yahoo_symbol = index_mapping[symbol_clean]
+            logger.info(f"Mapped {symbol} to index {yahoo_symbol}")
+            fetched_price = self._fetch_from_yahoo(yahoo_symbol)
+            if fetched_price and fetched_price > 0:
+                price = fetched_price
+            
+        if price is None:
+            # Try as regular stock - NSE first, then BSE
+            for suffix in ['.NS', '.BO', '']:
+                yahoo_symbol = f"{symbol_clean}{suffix}"
+                fetched_price = self._fetch_from_yahoo(yahoo_symbol)
+                if fetched_price and fetched_price > 0:
+                    logger.info(f"Found price for {symbol} using {yahoo_symbol}: {fetched_price}")
+                    price = fetched_price
+                    break
+        
+        # If still no price, log and return None
+        if price is None:
+            logger.warning(f"Could not fetch price for {symbol} - will show N/A")
+        
+        # Cache and return
         self.price_cache[symbol] = price
         return price
     
-    def _get_dummy_price(self, symbol: str) -> float:
-        """Provides realistic dummy prices for testing when Yahoo Finance unavailable"""
-        dummy_prices = {
-            'NIFTY': 22500, 'BANKNIFTY': 48000, 'FINNIFTY': 21500,
-            'MIDCPNIFTY': 11000, 'RELIANCE': 2900, 'TCS': 4000,
-            'INFY': 1600, 'HDFCBANK': 1500, 'ICICIBANK': 1100,
-            'SBIN': 800, 'ITC': 430, 'LT': 3600, 'AXISBANK': 1150,
-            'HDFC': 2800, 'WIPRO': 450, 'TATAMOTORS': 1050,
-            'BHARTIARTL': 1200, 'ASIANPAINT': 3200, 'MARUTI': 10500,
-            'TITAN': 3400, 'BAJFINANCE': 6800, 'NESTLEIND': 2400,
-            'HINDUNILVR': 2500, 'KOTAKBANK': 1700, 'ADANIPORTS': 1200,
-        }
-        price = dummy_prices.get(symbol.upper())
-        if price:
-            return float(price)
-        # Generate consistent dummy price based on symbol hash
-        return float(500 + (hash(symbol) % 3500))
+    def _fetch_from_yahoo(self, yahoo_symbol: str) -> Optional[float]:
+        """Internal method to fetch from Yahoo Finance"""
+        try:
+            ticker = yf.Ticker(yahoo_symbol)
+            
+            # Try history first (more reliable)
+            try:
+                hist = ticker.history(period="5d")  # 5 days in case market was closed
+                if not hist.empty and 'Close' in hist:
+                    price = float(hist['Close'].iloc[-1])
+                    if price > 0:
+                        return round(price, 2)
+            except:
+                pass
+            
+            # Fallback to info
+            try:
+                info = ticker.info
+                # Try multiple price fields
+                for field in ['currentPrice', 'regularMarketPrice', 'previousClose', 'open']:
+                    if field in info and info[field]:
+                        price = float(info[field])
+                        if price > 0:
+                            return round(price, 2)
+            except:
+                pass
+                
+        except Exception as e:
+            logger.debug(f"Error fetching {yahoo_symbol}: {str(e)[:100]}")
+        
+        return None
 
 
 @dataclass
@@ -353,7 +365,7 @@ class PositionManager:
         
         # Add columns if they don't exist
         if 'Yahoo_Price' not in df.columns:
-            df['Yahoo_Price'] = 0.0
+            df['Yahoo_Price'] = 'N/A'
         if 'Moneyness' not in df.columns:
             df['Moneyness'] = ''
         
@@ -368,33 +380,46 @@ class PositionManager:
             
             # Update all rows with this symbol
             symbol_mask = df['Symbol'] == symbol
-            df.loc[symbol_mask, 'Yahoo_Price'] = price
             
-            # Calculate moneyness for options
-            for idx in df[symbol_mask].index:
-                row = df.loc[idx]
+            if price is not None and price > 0:
+                # We have a valid price
+                df.loc[symbol_mask, 'Yahoo_Price'] = price
                 
-                if row['Security_Type'] == 'Call' and price > 0:
-                    strike = row['Strike']
-                    if price > strike * 1.01:  # 1% buffer
-                        df.at[idx, 'Moneyness'] = 'ITM'
-                    elif price < strike * 0.99:
-                        df.at[idx, 'Moneyness'] = 'OTM'
-                    else:
-                        df.at[idx, 'Moneyness'] = 'ATM'
-                elif row['Security_Type'] == 'Put' and price > 0:
-                    strike = row['Strike']
-                    if price < strike * 0.99:  # 1% buffer
-                        df.at[idx, 'Moneyness'] = 'ITM'
-                    elif price > strike * 1.01:
-                        df.at[idx, 'Moneyness'] = 'OTM'
-                    else:
-                        df.at[idx, 'Moneyness'] = 'ATM'
-                elif row['Security_Type'] == 'Futures':
-                    df.at[idx, 'Moneyness'] = 'N/A'
+                # Calculate moneyness for options
+                for idx in df[symbol_mask].index:
+                    row = df.loc[idx]
+                    
+                    if row['Security_Type'] == 'Call':
+                        strike = row['Strike']
+                        if price > strike * 1.01:  # 1% buffer
+                            df.at[idx, 'Moneyness'] = 'ITM'
+                        elif price < strike * 0.99:
+                            df.at[idx, 'Moneyness'] = 'OTM'
+                        else:
+                            df.at[idx, 'Moneyness'] = 'ATM'
+                    elif row['Security_Type'] == 'Put':
+                        strike = row['Strike']
+                        if price < strike * 0.99:  # 1% buffer
+                            df.at[idx, 'Moneyness'] = 'ITM'
+                        elif price > strike * 1.01:
+                            df.at[idx, 'Moneyness'] = 'OTM'
+                        else:
+                            df.at[idx, 'Moneyness'] = 'ATM'
+                    elif row['Security_Type'] == 'Futures':
+                        df.at[idx, 'Moneyness'] = 'N/A'
+            else:
+                # No price available - use N/A
+                df.loc[symbol_mask, 'Yahoo_Price'] = 'N/A'
+                df.loc[symbol_mask, 'Moneyness'] = 'N/A'
         
-        # Round prices for display
-        df['Yahoo_Price'] = df['Yahoo_Price'].round(2)
+        # Convert Yahoo_Price to proper format (numeric where possible, string for N/A)
+        for idx in df.index:
+            val = df.at[idx, 'Yahoo_Price']
+            if val != 'N/A' and pd.notna(val):
+                try:
+                    df.at[idx, 'Yahoo_Price'] = round(float(val), 2)
+                except:
+                    df.at[idx, 'Yahoo_Price'] = 'N/A'
         
         return df
     
