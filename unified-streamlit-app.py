@@ -1,5 +1,5 @@
 """
-Unified Trade Processing Pipeline
+Unified Trade Processing Pipeline - Fixed for Streamlit Cloud
 Combines Strategy Processing (Stage 1) and ACM Mapping (Stage 2)
 """
 
@@ -13,16 +13,37 @@ import traceback
 import os
 import sys
 
-# Add modules directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'modules'))
+# Fix the Python path for Streamlit Cloud
+current_dir = Path(__file__).parent
+modules_dir = current_dir / 'modules'
 
-# Import all modules
-from modules.input_parser import InputParser
-from modules.trade_parser import TradeParser  
-from modules.position_manager import PositionManager
-from modules.trade_processor import TradeProcessor
-from modules.output_generator import OutputGenerator
-from modules.acm_mapper import ACMMapper
+# Add both current directory and modules directory to path
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
+if str(modules_dir) not in sys.path:
+    sys.path.insert(0, str(modules_dir))
+
+# Now try importing - use direct imports if modules folder doesn't work
+try:
+    from modules.input_parser import InputParser
+    from modules.trade_parser import TradeParser  
+    from modules.position_manager import PositionManager
+    from modules.trade_processor import TradeProcessor
+    from modules.output_generator import OutputGenerator
+    from modules.acm_mapper import ACMMapper
+except ModuleNotFoundError:
+    # Try direct import if modules are in same directory
+    try:
+        from input_parser import InputParser
+        from Trade_Parser import TradeParser  
+        from position_manager import PositionManager
+        from trade_processor import TradeProcessor
+        from output_generator import OutputGenerator
+        from acm_mapper import ACMMapper
+    except ModuleNotFoundError as e:
+        st.error(f"Failed to import modules: {e}")
+        st.error("Please ensure all module files are in the repository")
+        st.stop()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -70,9 +91,43 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# Ensure output directories exist
+def ensure_directories():
+    """Ensure required directories exist"""
+    dirs = [
+        "output",
+        "output/stage1", 
+        "output/stage2",
+        "temp"
+    ]
+    for dir_path in dirs:
+        Path(dir_path).mkdir(parents=True, exist_ok=True)
+
+# Call at startup
+ensure_directories()
+
+def get_temp_dir():
+    """Get temporary directory that works on Streamlit Cloud"""
+    # Try /tmp first (Linux), then fallback to local temp
+    if Path("/tmp").exists() and os.access("/tmp", os.W_OK):
+        return Path("/tmp")
+    else:
+        temp_dir = Path("temp")
+        temp_dir.mkdir(exist_ok=True)
+        return temp_dir
+
 def main():
     st.title("🎯 Unified Trade Processing Pipeline")
     st.markdown("### Complete pipeline from raw trades to ACM ListedTrades format")
+    
+    # Debug info (remove in production)
+    with st.expander("Debug Info"):
+        st.write("Current Directory:", os.getcwd())
+        st.write("Script Location:", __file__)
+        st.write("Python Path:", sys.path[:3])
+        st.write("Files in current dir:", os.listdir('.'))
+        if Path('modules').exists():
+            st.write("Files in modules:", os.listdir('modules'))
     
     # Initialize session state
     if 'stage1_complete' not in st.session_state:
@@ -109,9 +164,20 @@ def main():
         # Mapping file selection
         st.subheader("3. Mapping File")
         default_mapping = None
-        for name in ["futures_mapping.csv", "futures mapping.csv", "data/futures_mapping.csv"]:
-            if Path(name).exists():
-                default_mapping = name
+        
+        # Check multiple possible locations
+        mapping_locations = [
+            "futures_mapping.csv",
+            "futures mapping.csv",
+            "data/futures_mapping.csv",
+            "data/futures mapping.csv",
+            "./futures_mapping.csv",
+            "./data/futures_mapping.csv"
+        ]
+        
+        for location in mapping_locations:
+            if Path(location).exists():
+                default_mapping = location
                 break
         
         if default_mapping:
@@ -146,9 +212,16 @@ def main():
         
         # ACM Schema file
         default_schema = None
-        for name in ["acm_schema.xlsx", "data/acm_schema.xlsx"]:
-            if Path(name).exists():
-                default_schema = name
+        schema_locations = [
+            "acm_schema.xlsx",
+            "data/acm_schema.xlsx",
+            "./acm_schema.xlsx",
+            "./data/acm_schema.xlsx"
+        ]
+        
+        for location in schema_locations:
+            if Path(location).exists():
+                default_schema = location
                 break
         
         if default_schema:
@@ -181,7 +254,7 @@ def main():
         
         st.divider()
         
-        # Process button
+        # Process buttons
         can_process_stage1 = (
             position_file is not None and 
             trade_file is not None and 
@@ -206,7 +279,6 @@ def main():
         if can_process_stage1 and (schema_file or default_schema):
             st.divider()
             if st.button("⚡ Run Complete Pipeline", type="primary", use_container_width=True):
-                # Run both stages
                 if process_stage1(position_file, trade_file, mapping_file, use_default_mapping, default_mapping):
                     process_stage2(schema_file, use_default_schema, default_schema)
     
@@ -234,17 +306,20 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
     """Process Stage 1: Strategy Assignment"""
     try:
         with st.spinner("Processing Stage 1: Strategy Assignment..."):
+            # Get temp directory
+            temp_dir = get_temp_dir()
+            
             # Save uploaded files
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(position_file.name).suffix) as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(position_file.name).suffix, dir=temp_dir) as tmp:
                 tmp.write(position_file.getbuffer())
                 pos_path = tmp.name
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(trade_file.name).suffix) as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(trade_file.name).suffix, dir=temp_dir) as tmp:
                 tmp.write(trade_file.getbuffer())
                 trade_path = tmp.name
             
             if mapping_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', dir=temp_dir) as tmp:
                     tmp.write(mapping_file.getbuffer())
                     map_path = tmp.name
             else:
@@ -303,8 +378,6 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
                 'final_positions': final_positions_df
             }
             st.session_state.stage1_complete = True
-            
-            # Store for Stage 2
             st.session_state.processed_trades_for_acm = processed_trades_df
             
             st.success("✅ Stage 1 Complete!")
@@ -319,16 +392,18 @@ def process_stage2(schema_file, use_default, default_path):
     """Process Stage 2: ACM Mapping"""
     try:
         with st.spinner("Processing Stage 2: ACM Mapping..."):
-            # Get processed trades from Stage 1
             if 'processed_trades_for_acm' not in st.session_state:
                 st.error("❌ Stage 1 must be completed first")
                 return False
             
             processed_trades_df = st.session_state.processed_trades_for_acm
             
+            # Get temp directory
+            temp_dir = get_temp_dir()
+            
             # Get schema path
             if schema_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx', dir=temp_dir) as tmp:
                     tmp.write(schema_file.getbuffer())
                     schema_path = tmp.name
             else:
@@ -346,11 +421,9 @@ def process_stage2(schema_file, use_default, default_path):
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Save ACM mapped file
             acm_file = output_dir / f"acm_listedtrades_{timestamp}.csv"
             mapped_df.to_csv(acm_file, index=False)
             
-            # Save errors file
             errors_file = output_dir / f"acm_listedtrades_{timestamp}_errors.csv"
             errors_df.to_csv(errors_file, index=False)
             
@@ -381,7 +454,6 @@ def display_pipeline_overview():
     """Display pipeline overview"""
     st.header("Pipeline Overview")
     
-    # Pipeline flow diagram
     col1, col2, col3 = st.columns([1, 0.1, 1])
     
     with col1:
@@ -406,17 +478,6 @@ def display_pipeline_overview():
         
         if st.session_state.stage1_complete:
             st.success("✅ Stage 1 Complete")
-            if 'stage1' in st.session_state.dataframes:
-                df = st.session_state.dataframes['stage1']['processed_trades']
-                col1_1, col1_2, col1_3 = st.columns(3)
-                with col1_1:
-                    st.metric("Total Trades", len(df))
-                with col1_2:
-                    if 'Strategy' in df.columns:
-                        st.metric("FULO", len(df[df['Strategy'] == 'FULO']))
-                with col1_3:
-                    if 'Strategy' in df.columns:
-                        st.metric("FUSH", len(df[df['Strategy'] == 'FUSH']))
     
     with col2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -442,14 +503,6 @@ def display_pipeline_overview():
         
         if st.session_state.stage2_complete:
             st.success("✅ Stage 2 Complete")
-            if 'stage2' in st.session_state.dataframes:
-                mapped_df = st.session_state.dataframes['stage2']['mapped']
-                errors_df = st.session_state.dataframes['stage2']['errors']
-                col3_1, col3_2 = st.columns(2)
-                with col3_1:
-                    st.metric("ACM Records", len(mapped_df))
-                with col3_2:
-                    st.metric("Validation Errors", len(errors_df))
 
 def display_stage1_results():
     """Display Stage 1 results"""
@@ -465,7 +518,6 @@ def display_stage1_results():
     
     data = st.session_state.dataframes['stage1']
     
-    # Create sub-tabs
     sub_tabs = st.tabs([
         "Processed Trades",
         "Starting Positions",
@@ -476,20 +528,6 @@ def display_stage1_results():
     with sub_tabs[0]:
         df = data['processed_trades']
         st.subheader("Processed Trades with Strategy Assignment")
-        
-        # Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total", len(df))
-        if 'Strategy' in df.columns:
-            with col2:
-                st.metric("FULO", len(df[df['Strategy'] == 'FULO']))
-            with col3:
-                st.metric("FUSH", len(df[df['Strategy'] == 'FUSH']))
-        if 'Split?' in df.columns:
-            with col4:
-                st.metric("Splits", len(df[df['Split?'] == 'Yes']))
-        
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[1]:
@@ -521,26 +559,11 @@ def display_stage2_results():
     
     data = st.session_state.dataframes['stage2']
     
-    # Create sub-tabs
     sub_tabs = st.tabs(["ACM Mapped Data", "Validation Errors"])
     
     with sub_tabs[0]:
         df = data['mapped']
         st.subheader("ACM ListedTrades Format")
-        
-        # Metrics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Records", len(df))
-        with col2:
-            if 'Transaction Type' in df.columns:
-                unique_types = df['Transaction Type'].nunique()
-                st.metric("Transaction Types", unique_types)
-        with col3:
-            if 'Strategy' in df.columns:
-                strategies = df['Strategy'].nunique()
-                st.metric("Strategies", strategies)
-        
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[1]:
@@ -604,24 +627,14 @@ def display_downloads():
                     )
         else:
             st.info("No Stage 2 outputs available yet")
-    
-    # Reset button
-    st.divider()
-    if st.button("🔄 Reset Pipeline", type="secondary", use_container_width=True):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
 
 # Footer
-def display_footer():
-    st.divider()
-    st.markdown("""
-    <div style='text-align: center; color: #666;'>
-        Trade Processing Pipeline v2.0 | Combines Strategy Processing + ACM Mapping | 
-        Built with Streamlit
-    </div>
-    """, unsafe_allow_html=True)
+st.divider()
+st.markdown("""
+<div style='text-align: center; color: #666;'>
+    Trade Processing Pipeline v2.0 | Combines Strategy Processing + ACM Mapping
+</div>
+""", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
-    display_footer()
