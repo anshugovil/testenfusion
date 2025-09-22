@@ -1,7 +1,6 @@
 """
-Unified Trade Processing Pipeline - Complete Version
-Combines Strategy Processing (Stage 1) and ACM Mapping (Stage 2)
-No external schema file required - ACM mappings are hardcoded
+Unified Trade Processing Pipeline - Final Version
+With schema export and optional custom schema upload
 """
 
 import streamlit as st
@@ -18,13 +17,12 @@ import sys
 current_dir = Path(__file__).parent
 modules_dir = current_dir / 'modules'
 
-# Add both current directory and modules directory to path
 if str(current_dir) not in sys.path:
     sys.path.insert(0, str(current_dir))
 if str(modules_dir) not in sys.path:
     sys.path.insert(0, str(modules_dir))
 
-# Import all modules with error handling
+# Import modules
 try:
     from modules.input_parser import InputParser
     from modules.trade_parser import TradeParser  
@@ -33,7 +31,6 @@ try:
     from modules.output_generator import OutputGenerator
     from modules.acm_mapper import ACMMapper
 except ModuleNotFoundError:
-    # Try direct import if modules are in same directory
     try:
         from input_parser import InputParser
         from Trade_Parser import TradeParser  
@@ -89,27 +86,26 @@ st.markdown("""
         padding: 10px;
         margin: 10px 0;
     }
+    .info-box {
+        background-color: #d1ecf1;
+        border: 1px solid #bee5eb;
+        border-radius: 4px;
+        padding: 10px;
+        margin: 10px 0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# Ensure output directories exist
 def ensure_directories():
     """Ensure required directories exist"""
-    dirs = [
-        "output",
-        "output/stage1", 
-        "output/stage2",
-        "temp"
-    ]
+    dirs = ["output", "output/stage1", "output/stage2", "temp"]
     for dir_path in dirs:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
 
-# Call at startup
 ensure_directories()
 
 def get_temp_dir():
     """Get temporary directory that works on Streamlit Cloud"""
-    # Try /tmp first (Linux), then fallback to local temp
     if Path("/tmp").exists() and os.access("/tmp", os.W_OK):
         return Path("/tmp")
     else:
@@ -132,11 +128,14 @@ def main():
         st.session_state.stage2_outputs = {}
     if 'dataframes' not in st.session_state:
         st.session_state.dataframes = {}
+    if 'acm_mapper' not in st.session_state:
+        st.session_state.acm_mapper = None
     
     # Sidebar
     with st.sidebar:
         st.header("📁 Input Files")
         
+        # Stage 1 Section
         st.markdown("### Stage 1: Strategy Processing")
         
         position_file = st.file_uploader(
@@ -153,11 +152,9 @@ def main():
             help="MS format trade file"
         )
         
-        # Mapping file selection
         st.subheader("3. Mapping File")
         default_mapping = None
         
-        # Check multiple possible locations
         mapping_locations = [
             "futures_mapping.csv",
             "futures mapping.csv",
@@ -201,8 +198,59 @@ def main():
         
         st.divider()
         
+        # Stage 2 Section with Schema Options
         st.markdown("### Stage 2: ACM Mapping")
-        st.info("✅ Uses built-in ACM format - no schema file needed!")
+        
+        # Schema options
+        schema_option = st.radio(
+            "Schema Configuration:",
+            ["Use built-in schema (default)", "Upload custom schema"],
+            index=0,
+            key="schema_option"
+        )
+        
+        custom_schema_file = None
+        
+        if schema_option == "Use built-in schema (default)":
+            st.info("✅ Will use hardcoded ACM format")
+            
+            # Download schema button
+            st.markdown("#### Download Schema Template")
+            
+            # Generate schema file
+            temp_mapper = ACMMapper()
+            schema_bytes = temp_mapper.generate_schema_excel()
+            
+            st.download_button(
+                label="📥 Download ACM Schema Template",
+                data=schema_bytes,
+                file_name=f"acm_schema_template_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Download the default schema as Excel for reference or customization",
+                use_container_width=True
+            )
+            
+            st.markdown("""
+            <div class='info-box'>
+            <small>
+            ℹ️ This template shows the default ACM format. 
+            You can download it to understand the structure or 
+            customize it for your needs.
+            </small>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        else:  # Upload custom schema
+            st.warning("📤 Upload your custom schema file")
+            custom_schema_file = st.file_uploader(
+                "Upload ACM Schema",
+                type=['xlsx', 'xls'],
+                key='custom_schema_file',
+                help="Excel file with 'Columns' sheet defining the ACM format"
+            )
+            
+            if custom_schema_file:
+                st.success(f"✔ Will use custom schema: {custom_schema_file.name}")
         
         st.divider()
         
@@ -213,7 +261,6 @@ def main():
             (mapping_file is not None or (use_default_mapping == "Use default from repository" and default_mapping))
         )
         
-        # Stage 2 only requires Stage 1 to be complete (no schema file needed!)
         can_process_stage2 = st.session_state.stage1_complete
         
         col1, col2 = st.columns(2)
@@ -224,27 +271,27 @@ def main():
         
         with col2:
             if st.button("🎯 Run Stage 2", type="secondary", use_container_width=True, disabled=not can_process_stage2):
-                process_stage2()
+                process_stage2(schema_option, custom_schema_file)
         
         if can_process_stage1:
             st.divider()
             if st.button("⚡ Run Complete Pipeline", type="primary", use_container_width=True):
                 if process_stage1(position_file, trade_file, mapping_file, use_default_mapping, default_mapping):
-                    process_stage2()
+                    process_stage2(schema_option, custom_schema_file)
         
-        # Reset button
         st.divider()
         if st.button("🔄 Reset All", type="secondary", use_container_width=True):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
     
-    # Main content area
+    # Main content tabs
     tabs = st.tabs([
         "📊 Pipeline Overview",
         "🔄 Stage 1: Strategy Processing", 
         "📋 Stage 2: ACM Mapping",
-        "📥 Downloads"
+        "📥 Downloads",
+        "📘 Schema Info"
     ])
     
     with tabs[0]:
@@ -258,12 +305,14 @@ def main():
     
     with tabs[3]:
         display_downloads()
+    
+    with tabs[4]:
+        display_schema_info()
 
 def process_stage1(position_file, trade_file, mapping_file, use_default, default_path):
     """Process Stage 1: Strategy Assignment"""
     try:
         with st.spinner("Processing Stage 1: Strategy Assignment..."):
-            # Get temp directory
             temp_dir = get_temp_dir()
             
             # Save uploaded files
@@ -287,7 +336,7 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
             positions = input_parser.parse_file(pos_path)
             
             if not positions:
-                st.error("❌ No positions found in Stage 1")
+                st.error("❌ No positions found")
                 return False
             
             st.success(f"✅ Parsed {len(positions)} positions ({input_parser.format_type} format)")
@@ -303,7 +352,7 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
             trades = trade_parser.parse_trade_file(trade_path)
             
             if not trades:
-                st.error("❌ No trades found in Stage 1")
+                st.error("❌ No trades found")
                 return False
             
             st.success(f"✅ Parsed {len(trades)} trades ({trade_parser.format_type} format)")
@@ -313,7 +362,7 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
             missing_trades = len(trade_parser.unmapped_symbols) if hasattr(trade_parser, 'unmapped_symbols') else 0
             
             if missing_positions > 0 or missing_trades > 0:
-                st.warning(f"⚠️ Found unmapped symbols: {missing_positions} from positions, {missing_trades} from trades")
+                st.warning(f"⚠️ Unmapped symbols: {missing_positions} from positions, {missing_trades} from trades")
             
             # Process trades
             position_manager = PositionManager()
@@ -348,7 +397,7 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
             st.session_state.stage1_complete = True
             st.session_state.processed_trades_for_acm = processed_trades_df
             
-            # Show summary metrics
+            # Metrics
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Starting Positions", len(starting_positions_df))
@@ -369,21 +418,38 @@ def process_stage1(position_file, trade_file, mapping_file, use_default, default
         st.code(traceback.format_exc())
         return False
 
-def process_stage2():
-    """Process Stage 2: ACM Mapping - No schema file required!"""
+def process_stage2(schema_option, custom_schema_file):
+    """Process Stage 2: ACM Mapping with optional custom schema"""
     try:
-        with st.spinner("Processing Stage 2: ACM Mapping (using built-in schema)..."):
+        with st.spinner("Processing Stage 2: ACM Mapping..."):
             if 'processed_trades_for_acm' not in st.session_state:
                 st.error("❌ Stage 1 must be completed first")
                 return False
             
             processed_trades_df = st.session_state.processed_trades_for_acm
             
-            # Initialize ACM Mapper - NO SCHEMA FILE NEEDED!
-            # The schema is hardcoded in the ACMMapper class
-            acm_mapper = ACMMapper()
+            # Initialize ACM Mapper based on schema option
+            if schema_option == "Use built-in schema (default)":
+                # Use hardcoded schema
+                acm_mapper = ACMMapper()
+                st.info("Using built-in ACM schema")
+            else:
+                # Use custom schema
+                if not custom_schema_file:
+                    st.error("❌ Please upload a custom schema file")
+                    return False
+                
+                # Save custom schema to temp file
+                temp_dir = get_temp_dir()
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx', dir=temp_dir) as tmp:
+                    tmp.write(custom_schema_file.getbuffer())
+                    schema_path = tmp.name
+                
+                acm_mapper = ACMMapper(schema_path)
+                st.info(f"Using custom schema: {custom_schema_file.name}")
             
-            st.info("Using hardcoded ACM schema - no configuration file needed")
+            # Store mapper for schema info display
+            st.session_state.acm_mapper = acm_mapper
             
             # Process to ACM format
             mapped_df, errors_df = acm_mapper.process_trades_to_acm(processed_trades_df)
@@ -400,10 +466,17 @@ def process_stage2():
             errors_file = output_dir / f"acm_listedtrades_{timestamp}_errors.csv"
             errors_df.to_csv(errors_file, index=False)
             
+            # Also save the schema used
+            schema_file = output_dir / f"acm_schema_used_{timestamp}.xlsx"
+            schema_bytes = acm_mapper.generate_schema_excel()
+            with open(schema_file, 'wb') as f:
+                f.write(schema_bytes)
+            
             # Store in session state
             st.session_state.stage2_outputs = {
                 'acm_mapped': acm_file,
-                'errors': errors_file
+                'errors': errors_file,
+                'schema_used': schema_file
             }
             st.session_state.dataframes['stage2'] = {
                 'mapped': mapped_df,
@@ -442,34 +515,23 @@ def display_pipeline_overview():
         st.markdown('<div class="stage-header">Stage 1: Strategy Processing</div>', unsafe_allow_html=True)
         st.info("""
         **Input:**
-        - Position File (BOD/Contract/MS)
-        - Trade File (MS format)
-        - Symbol Mapping CSV
+        - Position File
+        - Trade File
+        - Symbol Mapping
         
         **Processing:**
         - Bloomberg ticker generation
-        - Strategy assignment (FULO/FUSH)
-        - Trade splitting for position flips
+        - FULO/FUSH strategy assignment
+        - Trade splitting
         - Position tracking
         
         **Output:**
         - Processed trades with strategies
-        - Starting/final positions
-        - Missing mappings report
+        - Position summaries
         """)
         
         if st.session_state.stage1_complete:
             st.success("✅ Stage 1 Complete")
-            if 'stage1' in st.session_state.dataframes:
-                df = st.session_state.dataframes['stage1']['processed_trades']
-                metrics = st.columns(3)
-                with metrics[0]:
-                    st.metric("Total Trades", len(df))
-                if 'Strategy' in df.columns:
-                    with metrics[1]:
-                        st.metric("FULO", len(df[df['Strategy'] == 'FULO']))
-                    with metrics[2]:
-                        st.metric("FUSH", len(df[df['Strategy'] == 'FUSH']))
     
     with col2:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -480,100 +542,54 @@ def display_pipeline_overview():
         st.info("""
         **Input:**
         - Processed trades from Stage 1
-        - Built-in ACM schema (hardcoded)
+        - ACM schema (built-in or custom)
         
         **Processing:**
-        - Field mapping to ACM format
-        - Transaction type determination
-        - Timestamp generation (Singapore TZ)
-        - Mandatory field validation
+        - Field mapping
+        - Transaction type logic
+        - Validation
         
         **Output:**
         - ACM ListedTrades CSV
-        - Validation error report
+        - Error report
         """)
         
         if st.session_state.stage2_complete:
             st.success("✅ Stage 2 Complete")
-            if 'stage2' in st.session_state.dataframes:
-                mapped_df = st.session_state.dataframes['stage2']['mapped']
-                errors_df = st.session_state.dataframes['stage2']['errors']
-                metrics = st.columns(2)
-                with metrics[0]:
-                    st.metric("ACM Records", len(mapped_df))
-                with metrics[1]:
-                    st.metric("Errors", len(errors_df))
 
 def display_stage1_results():
     """Display Stage 1 results"""
     st.header("Stage 1: Strategy Processing Results")
     
     if not st.session_state.stage1_complete:
-        st.info("Stage 1 has not been run yet. Please process files using the sidebar.")
+        st.info("Stage 1 has not been run yet.")
         return
     
     if 'stage1' not in st.session_state.dataframes:
-        st.warning("No data available from Stage 1")
         return
     
     data = st.session_state.dataframes['stage1']
     
-    sub_tabs = st.tabs([
-        "Processed Trades",
-        "Starting Positions",
-        "Final Positions",
-        "Parsed Trades"
-    ])
+    sub_tabs = st.tabs(["Processed Trades", "Starting Positions", "Final Positions", "Parsed Trades"])
     
     with sub_tabs[0]:
         df = data['processed_trades']
-        st.subheader("Processed Trades with Strategy Assignment")
-        
-        # Show summary metrics
-        if not df.empty:
-            metrics = st.columns(4)
-            with metrics[0]:
-                st.metric("Total Trades", len(df))
-            if 'Strategy' in df.columns:
-                with metrics[1]:
-                    st.metric("FULO", len(df[df['Strategy'] == 'FULO']))
-                with metrics[2]:
-                    st.metric("FUSH", len(df[df['Strategy'] == 'FUSH']))
-            if 'Split?' in df.columns:
-                with metrics[3]:
-                    st.metric("Splits", len(df[df['Split?'] == 'Yes']))
-        
+        st.subheader("Processed Trades")
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[1]:
         df = data['starting_positions']
         st.subheader("Starting Positions")
-        if not df.empty:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Positions", len(df))
-            with col2:
-                if 'QTY' in df.columns:
-                    st.metric("Long", len(df[df['QTY'] > 0]))
-                    st.metric("Short", len(df[df['QTY'] < 0]))
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[2]:
         df = data['final_positions']
         st.subheader("Final Positions")
-        if not df.empty:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Positions", len(df))
-            with col2:
-                if 'QTY' in df.columns:
-                    st.metric("Long", len(df[df['QTY'] > 0]))
-                    st.metric("Short", len(df[df['QTY'] < 0]))
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[3]:
         df = data['parsed_trades']
-        st.subheader("Parsed Trades (Original)")
+        st.subheader("Parsed Trades")
         st.dataframe(df, use_container_width=True, height=400)
 
 def display_stage2_results():
@@ -581,79 +597,28 @@ def display_stage2_results():
     st.header("Stage 2: ACM Mapping Results")
     
     if not st.session_state.stage2_complete:
-        if st.session_state.stage1_complete:
-            st.info("Stage 2 has not been run yet. Click 'Run Stage 2' to process.")
-        else:
-            st.info("Complete Stage 1 first, then run Stage 2.")
+        st.info("Stage 2 has not been run yet.")
         return
     
     if 'stage2' not in st.session_state.dataframes:
-        st.warning("No data available from Stage 2")
         return
     
     data = st.session_state.dataframes['stage2']
     
-    sub_tabs = st.tabs(["ACM Mapped Data", "Validation Errors", "Field Summary"])
+    sub_tabs = st.tabs(["ACM Mapped Data", "Validation Errors"])
     
     with sub_tabs[0]:
         df = data['mapped']
         st.subheader("ACM ListedTrades Format")
-        
-        # Show metrics
-        if not df.empty:
-            metrics = st.columns(4)
-            with metrics[0]:
-                st.metric("Total Records", len(df))
-            if 'Transaction Type' in df.columns:
-                with metrics[1]:
-                    trans_types = df['Transaction Type'].nunique()
-                    st.metric("Transaction Types", trans_types)
-            if 'Strategy' in df.columns:
-                with metrics[2]:
-                    strategies = df['Strategy'].nunique()
-                    st.metric("Unique Strategies", strategies)
-            if 'Account Id' in df.columns:
-                with metrics[3]:
-                    accounts = df['Account Id'].nunique()
-                    st.metric("Unique Accounts", accounts)
-        
         st.dataframe(df, use_container_width=True, height=400)
     
     with sub_tabs[1]:
         errors_df = data['errors']
         if len(errors_df) == 0:
-            st.success("✅ No validation errors found! All mandatory fields are populated.")
+            st.success("✅ No validation errors!")
         else:
-            st.error(f"⚠️ Found {len(errors_df)} validation errors")
-            
-            # Group errors by column
-            if not errors_df.empty:
-                error_summary = errors_df.groupby('column').size().reset_index(name='count')
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.subheader("Errors by Field")
-                    st.dataframe(error_summary, use_container_width=True)
-                with col2:
-                    st.subheader("Error Details")
-                    st.dataframe(errors_df, use_container_width=True, height=300)
-    
-    with sub_tabs[2]:
-        df = data['mapped']
-        st.subheader("Field Population Summary")
-        if not df.empty:
-            # Check which fields are populated
-            field_summary = []
-            for col in df.columns:
-                non_empty = df[col].astype(str).str.strip().replace('', pd.NA).notna().sum()
-                field_summary.append({
-                    'Field': col,
-                    'Populated': non_empty,
-                    'Empty': len(df) - non_empty,
-                    'Percentage': f"{(non_empty/len(df)*100):.1f}%"
-                })
-            
-            summary_df = pd.DataFrame(field_summary)
-            st.dataframe(summary_df, use_container_width=True)
+            st.error(f"⚠️ {len(errors_df)} validation errors")
+            st.dataframe(errors_df, use_container_width=True)
 
 def display_downloads():
     """Display download section"""
@@ -662,7 +627,7 @@ def display_downloads():
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### Stage 1: Strategy Processing")
+        st.markdown("### Stage 1 Outputs")
         
         if st.session_state.stage1_complete and st.session_state.stage1_outputs:
             for key, path in st.session_state.stage1_outputs.items():
@@ -683,16 +648,16 @@ def display_downloads():
                             data,
                             file_name=Path(path).name,
                             mime=mime,
-                            key=f"dl_stage1_{key}",
+                            key=f"dl_s1_{key}",
                             use_container_width=True
                         )
-                    except Exception as e:
-                        st.warning(f"Could not load {key}: {e}")
+                    except:
+                        pass
         else:
-            st.info("No Stage 1 outputs available yet")
+            st.info("No outputs yet")
     
     with col2:
-        st.markdown("### Stage 2: ACM Mapping")
+        st.markdown("### Stage 2 Outputs")
         
         if st.session_state.stage2_complete and st.session_state.stage2_outputs:
             for key, path in st.session_state.stage2_outputs.items():
@@ -701,25 +666,92 @@ def display_downloads():
                         with open(path, 'rb') as f:
                             data = f.read()
                         
-                        label = "📊 ACM ListedTrades" if 'acm' in key else "⚠️ Validation Errors"
+                        if 'acm' in key:
+                            label = "📊 ACM ListedTrades"
+                        elif 'error' in key:
+                            label = "⚠️ Validation Errors"
+                        elif 'schema' in key:
+                            label = "📘 Schema Used"
+                        else:
+                            label = key.title()
+                        
+                        mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if 'schema' in key else 'text/csv'
+                        
                         st.download_button(
                             label,
                             data,
                             file_name=Path(path).name,
-                            mime='text/csv',
-                            key=f"dl_stage2_{key}",
+                            mime=mime,
+                            key=f"dl_s2_{key}",
                             use_container_width=True
                         )
-                    except Exception as e:
-                        st.warning(f"Could not load {key}: {e}")
+                    except:
+                        pass
         else:
-            st.info("No Stage 2 outputs available yet")
+            st.info("No outputs yet")
+
+def display_schema_info():
+    """Display schema information"""
+    st.header("📘 ACM Schema Information")
+    
+    tab1, tab2, tab3 = st.tabs(["Current Schema", "Field Mappings", "Transaction Rules"])
+    
+    with tab1:
+        st.subheader("Current Schema Structure")
+        
+        # Get current mapper
+        mapper = st.session_state.acm_mapper if st.session_state.acm_mapper else ACMMapper()
+        
+        # Display columns
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Output Columns")
+            for i, col in enumerate(mapper.columns_order, 1):
+                mandatory = "🔴" if col in mapper.mandatory_columns else "⚪"
+                st.write(f"{i}. {mandatory} {col}")
+        
+        with col2:
+            st.markdown("#### Mandatory Fields")
+            for col in mapper.mandatory_columns:
+                st.write(f"✓ {col}")
+    
+    with tab2:
+        st.subheader("Field Mapping Rules")
+        
+        # Create mapping table
+        mapping_data = []
+        for col, rule in mapper.mapping_rules.items():
+            mapping_data.append({
+                "ACM Field": col,
+                "Source": rule,
+                "Required": "Yes" if col in mapper.mandatory_columns else "No"
+            })
+        
+        mapping_df = pd.DataFrame(mapping_data)
+        st.dataframe(mapping_df, use_container_width=True)
+    
+    with tab3:
+        st.subheader("Transaction Type Rules")
+        
+        st.markdown("""
+        Transaction Type is determined by combining **B/S** and **Opposite?** flags:
+        """)
+        
+        rules_df = pd.DataFrame([
+            {"B/S": "Buy", "Opposite?": "No", "→ Transaction Type": "Buy"},
+            {"B/S": "Buy", "Opposite?": "Yes", "→ Transaction Type": "BuyToCover"},
+            {"B/S": "Sell", "Opposite?": "No", "→ Transaction Type": "SellShort"},
+            {"B/S": "Sell", "Opposite?": "Yes", "→ Transaction Type": "Sell"}
+        ])
+        
+        st.dataframe(rules_df, use_container_width=True, hide_index=True)
 
 # Footer
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    Trade Processing Pipeline v2.0 | Strategy Processing + ACM Mapping | No Schema File Required
+    Trade Processing Pipeline v2.1 | With Schema Export & Custom Upload Support
 </div>
 """, unsafe_allow_html=True)
 
